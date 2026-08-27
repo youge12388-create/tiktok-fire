@@ -1,0 +1,25 @@
+# 隐私保护：禁止将敏感数据打入镜像
+data/
+.env
+state.json
+*.log
+*.png
+*.jpg
+*.jpeg
+frontend/node_modules/
+frontend/dist/
+.venv/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 版本控制
+.git/
+.gitignore
+
+# 编辑器与系统文件
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

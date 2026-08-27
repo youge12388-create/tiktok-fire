@@ -1,0 +1,17 @@
+services:
+  douyin-cloud-streak:
+    build: .
+    container_name: douyin-cloud-streak
+    restart: always
+    ports:
+      - "127.0.0.1:8000:8000"
+    shm_size: 1gb
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - TZ=Asia/Shanghai
+      # 容器内监听所有接口以配合端口映射；宿主机仍只绑定 127.0.0.1，不暴露公网
+      - HOST=0.0.0.0
+    volumes:
+      - ./data:/app/data
