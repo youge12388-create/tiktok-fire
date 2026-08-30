@@ -25,7 +25,6 @@ import threading
 import time
 from pathlib import Path
 
-import requests
 from playwright.sync_api import sync_playwright
 
 from .accounts import acquire_browser_slot, release_browser_slot
@@ -238,13 +237,25 @@ def _session_worker(aid: str, stop_flag: threading.Event) -> None:
     browser = None
     xvfb_proc = None
     try:
+        queue_started = time.perf_counter()
         _acquire_slot_tracked(aid)
+        logger.info(
+            "[%s] 扫码浏览器名额已获取，排队耗时 %.2fs",
+            aid,
+            time.perf_counter() - queue_started,
+        )
         if _is_stopped(aid):
             raise CancelledError()
 
         _set(aid, status="starting", message="正在打开抖音登录页…")
+        browser_started = time.perf_counter()
         pw = sync_playwright().start()
         browser, xvfb_proc = _launch_browser(pw)
+        logger.info(
+            "[%s] 扫码浏览器启动完成，耗时 %.2fs",
+            aid,
+            time.perf_counter() - browser_started,
+        )
         # UA 版本号与真实内核保持一致，固定旧版本号容易被风控识别为伪造环境
         chrome_major = (browser.version or "").split(".")[0] or "124"
         context = browser.new_context(
@@ -272,8 +283,19 @@ def _session_worker(aid: str, stop_flag: threading.Event) -> None:
         except Exception:
             pass
 
+        navigation_started = time.perf_counter()
         page.goto(CHAT_URL, timeout=60000, wait_until="domcontentloaded")
-        page.wait_for_timeout(3000)
+        logger.info(
+            "[%s] 抖音登录页 DOM 已加载，耗时 %.2fs",
+            aid,
+            time.perf_counter() - navigation_started,
+        )
+
+        # 页面资源加载速度波动较大。等待登录标签可见即可继续，避免无条件多等 3 秒。
+        try:
+            page.get_by_text(LOGIN_TAB_TEXT).first.wait_for(state="visible", timeout=8000)
+        except Exception:
+            pass
 
         # 复刻 2.1 GetLoginPng 前置动作：收起面板残留 -> 切「扫码登录」标签 -> 点二维码容器
         try:
@@ -286,14 +308,21 @@ def _session_worker(aid: str, stop_flag: threading.Event) -> None:
             page.get_by_text(LOGIN_TAB_TEXT).first.click(timeout=1500)
         except Exception:
             pass
-        page.wait_for_timeout(1000)
         try:
-            page.locator(QR_CODE_SELECTOR).first.click(timeout=1500)
+            qr_container = page.locator(QR_CODE_SELECTOR).first
+            qr_container.wait_for(state="visible", timeout=5000)
+            qr_container.click(timeout=1500)
         except Exception:
             pass
-        page.wait_for_timeout(2000)
 
-        qr_data = _wait_and_extract_qrcode(page)
+        qr_started = time.perf_counter()
+        qr_data = _wait_and_extract_qrcode(page, account_id=aid)
+        logger.info(
+            "[%s] 登录二维码提取结束，耗时 %.2fs，结果=%s",
+            aid,
+            time.perf_counter() - qr_started,
+            "成功" if qr_data else "失败",
+        )
         if not qr_data:
             raise RuntimeError("未能从页面提取到登录二维码，请稍后重试")
         _set(aid, status="waiting_scan", message="请使用抖音 App 扫码登录", qrcode=qr_data)
@@ -326,7 +355,7 @@ def _session_worker(aid: str, stop_flag: threading.Event) -> None:
                 logger.info("[%s] 登录二维码已过期，第 %s 次自动刷新", aid, refresh_count)
                 _click_qr_refresh(page)
                 page.wait_for_timeout(2500)
-                qr_data = _wait_and_extract_qrcode(page, timeout_ms=30000)
+                qr_data = _wait_and_extract_qrcode(page, timeout_ms=30000, account_id=aid)
                 if qr_data:
                     _set(aid, qrcode=qr_data,
                          message=f"二维码已自动刷新（第 {refresh_count} 次），请重新扫码")
@@ -437,13 +466,45 @@ def _extract_face_qr(page) -> str | None:
         return None
 
 
-def _wait_and_extract_qrcode(page, timeout_ms: int = 45000) -> str | None:
+def _qrcode_locator_to_data_url(locator, src: str, account_id: str | None = None) -> str | None:
+    """将二维码元素转换为 data URL，不额外从服务端下载二维码图片。"""
+    started = time.perf_counter()
+    if src.startswith("data:image"):
+        if account_id:
+            logger.info(
+                "[%s] 登录二维码转换完成（页面 data URL），耗时 %.2fs",
+                account_id,
+                time.perf_counter() - started,
+            )
+        return src
+
+    try:
+        image = locator.screenshot(type="png", timeout=5000)
+        data = "data:image/png;base64," + base64.b64encode(image).decode()
+        if account_id:
+            logger.info(
+                "[%s] 登录二维码转换完成（元素截图），耗时 %.2fs",
+                account_id,
+                time.perf_counter() - started,
+            )
+        return data
+    except Exception:
+        # 保留旧版对已编码内容的兼容兜底；不再发起与页面独立的远程下载请求。
+        if src:
+            if account_id:
+                logger.warning("[%s] 二维码元素截图失败，使用已编码源兜底", account_id)
+            return f"data:image/png;base64,{src}"
+    return None
+
+
+def _wait_and_extract_qrcode(page, timeout_ms: int = 45000, account_id: str | None = None) -> str | None:
     """等待二维码出现并提取为 data URL；失败时整页截图兜底。
 
     容器冷启动首次加载可能超过 20s，窗口过短会把慢加载误判为失败。
     """
     deadline = time.time() + timeout_ms / 1000
     src = ""
+    qr_locator = None
     while time.time() < deadline:
         for sel in _QR_SELECTORS:
             try:
@@ -454,6 +515,7 @@ def _wait_and_extract_qrcode(page, timeout_ms: int = 45000) -> str | None:
                         candidate = first.get_attribute("src") or ""
                         if len(candidate) > 50:
                             src = candidate
+                            qr_locator = first
                             break
             except Exception:
                 continue
@@ -470,6 +532,7 @@ def _wait_and_extract_qrcode(page, timeout_ms: int = 45000) -> str | None:
                         candidate = loc.first.get_attribute("src") or ""
                         if len(candidate) > 50:
                             src = candidate
+                            qr_locator = loc.first
                             break
                 except Exception:
                     continue
@@ -479,17 +542,10 @@ def _wait_and_extract_qrcode(page, timeout_ms: int = 45000) -> str | None:
             break
         page.wait_for_timeout(800)
 
-    if src.startswith("data:image"):
-        return src
-    if src.startswith("http"):
-        try:
-            resp = requests.get(src, timeout=8)
-            b64 = base64.b64encode(resp.content).decode()
-            return f"data:image/png;base64,{b64}"
-        except Exception:
-            pass
-    if src:
-        return f"data:image/png;base64,{src}"
+    if src and qr_locator:
+        data = _qrcode_locator_to_data_url(qr_locator, src, account_id)
+        if data:
+            return data
     # 兜底：整页截图（用户至少能看到登录框与二维码）；渲染进程繁忙时可能瞬时失败，重试一次
     for _attempt in range(2):
         try:
