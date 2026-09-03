@@ -1,25 +1,27 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import {
-  Document,
-  Menu,
-  Message,
-  Odometer,
-  Setting,
-  SwitchButton,
-  Timer,
-  User
-} from '@element-plus/icons-vue'
+import { ChatDotRound, Document, HomeFilled, Menu, Setting, SwitchButton, Timer, User, UserFilled } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const auth = useAuthStore()
 const isMobile = ref(false)
 const drawerOpen = ref(false)
 
+const primaryNav = [
+  { path: '/dashboard', label: '总览', icon: HomeFilled },
+  { path: '/accounts', label: '账号管理', icon: User, step: 1 },
+  { path: '/contacts', label: '联系人', icon: ChatDotRound, step: 2 },
+  { path: '/tasks', label: '任务配置', icon: Timer, step: 3 },
+  { path: '/logs', label: '执行记录', icon: Document }
+]
+const secondaryNav = [{ path: '/settings', label: '系统信息', icon: Setting }]
+const currentPage = computed(() => [...primaryNav, ...secondaryNav].find((item) => item.path === route.path))
+
 function onResize() {
-  isMobile.value = window.innerWidth < 992
+  isMobile.value = window.innerWidth < 900
+  if (!isMobile.value) drawerOpen.value = false
 }
 
 onMounted(() => {
@@ -30,71 +32,108 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
 </script>
 
 <template>
-  <el-container class="layout">
-    <el-aside v-if="!isMobile" width="220px" class="aside">
-      <div class="brand">抖音私信助手</div>
-      <el-menu :default-active="route.path" router class="menu">
-        <el-menu-item index="/dashboard"><el-icon><Odometer /></el-icon><span>仪表盘</span></el-menu-item>
-        <el-menu-item index="/accounts"><el-icon><User /></el-icon><span>抖音账号</span></el-menu-item>
-        <el-menu-item index="/contacts"><el-icon><Message /></el-icon><span>好友管理</span></el-menu-item>
-        <el-menu-item index="/tasks"><el-icon><Timer /></el-icon><span>续火任务</span></el-menu-item>
-        <el-menu-item index="/logs"><el-icon><Document /></el-icon><span>执行日志</span></el-menu-item>
-        <el-menu-item index="/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
-      </el-menu>
-    </el-aside>
+  <div class="app-layout">
+    <aside v-if="!isMobile" class="sidebar">
+      <router-link to="/dashboard" class="brand">
+        <span class="brand-icon"><el-icon><ChatDotRound /></el-icon></span>
+        <span><strong>抖音私信助手</strong><small>续火任务管理</small></span>
+      </router-link>
 
-    <el-drawer v-model="drawerOpen" direction="ltr" size="230px" :with-header="false" class="drawer">
-      <div class="brand">抖音私信助手</div>
-      <el-menu :default-active="route.path" router class="menu" @select="drawerOpen = false">
-        <el-menu-item index="/dashboard"><el-icon><Odometer /></el-icon><span>仪表盘</span></el-menu-item>
-        <el-menu-item index="/accounts"><el-icon><User /></el-icon><span>抖音账号</span></el-menu-item>
-        <el-menu-item index="/contacts"><el-icon><Message /></el-icon><span>好友管理</span></el-menu-item>
-        <el-menu-item index="/tasks"><el-icon><Timer /></el-icon><span>续火任务</span></el-menu-item>
-        <el-menu-item index="/logs"><el-icon><Document /></el-icon><span>执行日志</span></el-menu-item>
-        <el-menu-item index="/settings"><el-icon><Setting /></el-icon><span>系统设置</span></el-menu-item>
-      </el-menu>
+      <nav class="nav" aria-label="主导航">
+        <router-link v-for="item in primaryNav" :key="item.path" :to="item.path" class="nav-item" :class="{ active: route.path === item.path }">
+          <el-icon><component :is="item.icon" /></el-icon>
+          <span>{{ item.label }}</span>
+          <small v-if="item.step">{{ item.step }}</small>
+        </router-link>
+      </nav>
+
+      <nav class="nav nav-secondary" aria-label="系统导航">
+        <router-link v-for="item in secondaryNav" :key="item.path" :to="item.path" class="nav-item" :class="{ active: route.path === item.path }">
+          <el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span>
+        </router-link>
+      </nav>
+
+      <div class="sidebar-foot" aria-label="当前工作模式">
+        <span class="signal-dot"></span>
+        <span><strong>本地工作台</strong><small>LOCAL CONTROL</small></span>
+      </div>
+    </aside>
+
+    <el-drawer v-model="drawerOpen" direction="ltr" size="260px" :with-header="false" class="mobile-drawer">
+      <div class="mobile-menu">
+        <div class="brand">
+          <span class="brand-icon"><el-icon><ChatDotRound /></el-icon></span>
+          <span><strong>抖音私信助手</strong><small>续火任务管理</small></span>
+        </div>
+        <nav class="nav" aria-label="移动端导航">
+          <router-link v-for="item in [...primaryNav, ...secondaryNav]" :key="item.path" :to="item.path" class="nav-item" :class="{ active: route.path === item.path }" @click="drawerOpen = false">
+            <el-icon><component :is="item.icon" /></el-icon><span>{{ item.label }}</span><small v-if="item.step">{{ item.step }}</small>
+          </router-link>
+        </nav>
+      </div>
     </el-drawer>
 
-    <el-container>
-      <el-header class="header">
-        <div class="header-left">
-          <el-button v-if="isMobile" text class="burger" @click="drawerOpen = true">
-            <el-icon size="22"><Menu /></el-icon>
-          </el-button>
-          <span class="title">抖音私信自动化助手 V1</span>
+    <div class="content-area">
+      <header class="topbar">
+        <div class="topbar-title">
+          <el-button v-if="isMobile" text aria-label="打开导航" @click="drawerOpen = true"><el-icon size="21"><Menu /></el-icon></el-button>
+          <span>{{ currentPage?.label || '工作台' }}</span>
         </div>
-        <div class="user">
-          <span>{{ auth.username }}</span>
-          <el-button link type="danger" @click="auth.logout()">
-            <el-icon><SwitchButton /></el-icon><span>退出</span>
-          </el-button>
+        <div class="user-area">
+          <span class="user-icon"><el-icon><UserFilled /></el-icon></span>
+          <span class="user-name">{{ auth.username || '管理员' }}</span>
+          <el-button text class="logout" @click="auth.logout()"><el-icon><SwitchButton /></el-icon><span>退出</span></el-button>
         </div>
-      </el-header>
-      <el-main class="main">
-        <router-view />
-      </el-main>
-    </el-container>
-  </el-container>
+      </header>
+      <main class="main-content"><router-view /></main>
+    </div>
+  </div>
 </template>
 
 <style scoped>
-.layout { height: 100vh; }
-.aside { background: #0f172a; color: #e2e8f0; }
-.brand { height: 60px; display: flex; align-items: center; padding: 0 20px; font-weight: 700; font-size: 16px; color: #e2e8f0; }
-.menu { border-right: none; background: transparent; }
-:deep(.el-menu-item) { color: #cbd5e1; }
-:deep(.el-menu-item.is-active) { color: #fff; background: #1e293b; }
-:deep(.el-menu-item:hover) { background: #1e293b; }
-.header { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #e2e8f0; padding: 0 16px; }
-.header-left { display: flex; align-items: center; gap: 8px; }
-.burger { color: #334155; padding: 4px; }
-.title { font-weight: 600; }
-.user { display: flex; align-items: center; gap: 12px; }
-.main { background: #f8fafc; padding: 16px; }
-.drawer :deep(.el-drawer__body) { background: #0f172a; padding: 0; }
-@media (max-width: 768px) {
-  .main { padding: 10px; }
-  .header { padding: 0 10px; }
-  .title { font-size: 14px; }
+.app-layout { display: flex; min-height: 100vh; background: var(--color-bg); }
+.sidebar { position: sticky; top: 0; display: flex; width: 240px; height: 100vh; flex: 0 0 240px; flex-direction: column; padding: 24px 16px; background: var(--color-sidebar); }
+.brand { display: flex; align-items: center; gap: 11px; padding: 2px 9px 28px; }
+.brand-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: #fff; background: var(--color-primary); }
+.brand-icon .el-icon { font-size: 19px; }
+.brand strong, .brand small { display: block; color: var(--color-sidebar-text); }
+.brand strong { font-size: 14px; font-weight: 700; }
+.brand small { margin-top: 4px; color: var(--color-sidebar-muted); font-size: 10px; }
+.nav { display: grid; gap: 4px; }
+.nav-item { position: relative; display: flex; align-items: center; gap: 11px; min-height: 44px; padding: 0 12px; border-radius: 10px; color: var(--color-sidebar-muted); font-size: 13px; transition: color 160ms ease, background 160ms ease; }
+.nav-item:hover { color: var(--color-sidebar-text); background: rgba(255, 255, 255, 0.06); }
+.nav-item.active { color: #fff; background: var(--color-sidebar-surface); font-weight: 700; }
+.nav-item.active .el-icon { color: var(--color-primary); }
+.nav-item .el-icon { font-size: 17px; }
+.nav-item span { flex: 1; }
+.nav-item small { display: grid; width: 20px; height: 20px; place-items: center; border: 1px solid currentColor; border-radius: 50%; font-size: 10px; font-weight: 700; opacity: 0.7; }
+.nav-secondary { margin-top: auto; padding-top: 16px; border-top: 1px solid rgba(255, 255, 255, 0.11); }
+.sidebar-foot { display: flex; align-items: center; gap: 9px; padding: 22px 12px 0; color: var(--color-sidebar-text); }
+.signal-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--color-success); box-shadow: 0 0 0 4px rgba(93, 184, 151, 0.12); }
+.sidebar-foot strong, .sidebar-foot small { display: block; }
+.sidebar-foot strong { font-size: 11px; font-weight: 650; }
+.sidebar-foot small { margin-top: 3px; color: var(--color-sidebar-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; letter-spacing: 0.08em; }
+.content-area { min-width: 0; flex: 1; }
+.topbar { position: sticky; z-index: 10; top: 0; display: flex; height: 72px; align-items: center; justify-content: space-between; padding: 0 36px; border-bottom: 1px solid var(--color-border); background: rgba(16, 20, 27, 0.96); }
+.topbar-title { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; }
+.user-area { display: flex; align-items: center; gap: 8px; }
+.user-icon { display: grid; width: 30px; height: 30px; place-items: center; border-radius: 50%; color: var(--color-text-secondary); background: var(--color-surface-muted); }
+.user-name { font-size: 12px; }
+.logout { margin-left: 4px; color: var(--color-text-secondary); }
+.logout:hover { color: var(--color-primary); }
+.main-content { min-height: calc(100vh - 72px); padding: 34px 36px 60px; }
+.mobile-drawer :deep(.el-drawer__body) { padding: 0; }
+.mobile-menu { min-height: 100%; padding: 24px 16px; background: var(--color-sidebar); }
+.mobile-menu .brand { padding-bottom: 28px; }
+
+@media (max-width: 899px) {
+  .topbar { padding: 0 20px; }
+  .main-content { padding: 26px 20px 48px; }
+}
+
+@media (max-width: 520px) {
+  .user-name, .logout span { display: none; }
+  .topbar { height: 60px; }
+  .main-content { min-height: calc(100vh - 60px); padding: 22px 14px 42px; }
 }
 </style>

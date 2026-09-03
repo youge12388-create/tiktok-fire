@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Loading } from '@element-plus/icons-vue'
+import { Loading, MoreFilled, Plus, UserFilled } from '@element-plus/icons-vue'
+import { getErrorMessage } from '@/api/errors'
 import {
   checkLogin,
   createAccount,
@@ -16,13 +17,14 @@ import type { Account, ScanStatus } from '@/types'
 
 const accounts = ref<Account[]>([])
 const loading = ref(false)
-const form = reactive({ name: '', device: '' })
-
-const dialogVisible = ref(false)
+const saving = ref(false)
+const createDialogVisible = ref(false)
+const scanDialogVisible = ref(false)
 const polling = ref(false)
-const scanning = ref(false)
+const cancellingScan = ref(false)
 const scanAccountId = ref('')
 const scanAccountName = ref('')
+const form = reactive({ name: '', device: '' })
 const scan = reactive<ScanStatus>({ status: 'idle', message: '', qrcode: '', error: '' })
 let timer: number | undefined
 
@@ -31,11 +33,17 @@ async function load() {
   try {
     const { data } = await listAccounts()
     accounts.value = data.accounts
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '加载账号失败')
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '账号加载失败，请刷新重试'))
   } finally {
     loading.value = false
   }
+}
+
+function openCreate() {
+  form.name = ''
+  form.device = ''
+  createDialogVisible.value = true
 }
 
 async function add() {
@@ -43,99 +51,111 @@ async function add() {
     ElMessage.warning('请输入账号名称')
     return
   }
-  await createAccount(form.name.trim(), form.device.trim())
-  form.name = ''
-  form.device = ''
-  ElMessage.success('已新增账号')
-  await load()
-}
-
-async function toggle(a: Account) {
-  await updateAccount(a.id, { enabled: a.enabled })
-  ElMessage.success('已更新')
-}
-
-async function rename(a: Account) {
+  saving.value = true
   try {
-    const { value } = await ElMessageBox.prompt('请输入新的账号名称', '修改账号名称', {
-      inputValue: a.name,
-      inputValidator: (v: string) => (v && v.trim() ? true : '名称不能为空')
-    })
-    await updateAccount(a.id, { name: value.trim() })
-    ElMessage.success('已更新')
+    await createAccount(form.name.trim(), form.device.trim())
+    createDialogVisible.value = false
+    ElMessage.success('账号已添加，请扫码登录')
     await load()
-  } catch {
-    /* 用户取消 */
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '账号添加失败，请稍后重试'))
+  } finally {
+    saving.value = false
   }
 }
 
-async function del(a: Account) {
+async function toggle(account: Account) {
+  const enabled = account.enabled
   try {
-    await ElMessageBox.confirm(`确认删除账号「${a.name}」？登录态将归档而非立即删除。`, '删除账号', {
-      type: 'warning'
+    await updateAccount(account.id, { enabled })
+    ElMessage.success(enabled ? '账号已启用' : '账号已停用')
+  } catch (error: unknown) {
+    account.enabled = !enabled
+    ElMessage.error(getErrorMessage(error, '账号状态更新失败'))
+  }
+}
+
+async function rename(account: Account) {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入便于识别的账号名称', '修改账号名称', {
+      inputValue: account.name,
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValidator: (input: string) => (input.trim() ? true : '名称不能为空')
+    })
+    await updateAccount(account.id, { name: value.trim() })
+    ElMessage.success('账号名称已更新')
+    await load()
+  } catch (error: unknown) {
+    if (error instanceof Error && error.message === 'cancel') return
+    if (typeof error === 'string' && error === 'cancel') return
+    ElMessage.error(getErrorMessage(error, '账号名称更新失败'))
+  }
+}
+
+async function del(account: Account) {
+  try {
+    await ElMessageBox.confirm(`删除「${account.name}」后，登录态会被归档。`, '删除账号', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消'
     })
   } catch {
     return
   }
-  await removeAccount(a.id)
-  ElMessage.success('已删除')
-  await load()
+  try {
+    await removeAccount(account.id)
+    ElMessage.success('账号已删除')
+    await load()
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '账号删除失败'))
+  }
 }
 
-function accountStatus(a: Account) {
-  if (!a.enabled) return { type: 'info', label: '已停用' }
-  if (a.running || a.contacts_fetching || a.harvesting) return { type: 'warning', label: '运行中' }
-  const s = a.session_status
-  if (!s || s === 'unknown') {
-    return { type: 'danger', label: a.state_file_exists ? '需重新登录' : '未登录' }
+function accountStatus(account: Account) {
+  if (!account.enabled) return { type: 'info', label: '已停用' }
+  if (account.running || account.contacts_fetching || account.harvesting) return { type: 'warning', label: '运行中' }
+  if (!account.state_file_exists || ['unknown', 'expired', 'failed', 'invalid'].includes(account.session_status || '')) {
+    return { type: 'danger', label: account.state_file_exists ? '需重新登录' : '未登录' }
   }
-  if (['expired', 'failed', 'invalid'].includes(s)) return { type: 'danger', label: '需重新登录' }
   return { type: 'success', label: '正常' }
 }
 
-function scanLabel(s: string) {
-  switch (s) {
-    case 'queuing':
-    case 'starting':
-      return '正在启动'
-    case 'waiting_scan':
-      return '等待扫码'
-    case 'success':
-      return '登录成功'
-    case 'expired':
-      return '二维码失效'
-    case 'cancelled':
-      return '已取消'
-    case 'failed':
-      return '登录失败'
-    default:
-      return s || '空闲'
+function scanLabel(status: string) {
+  const labels: Record<string, string> = {
+    queuing: '正在启动',
+    starting: '正在启动',
+    waiting_scan: '等待扫码',
+    success: '登录成功',
+    expired: '二维码已失效',
+    cancelled: '已取消',
+    failed: '登录失败'
   }
+  return labels[status] || '准备中'
 }
 
-function fmtTime(v?: string | null) {
-  if (!v) return '—'
-  const d = new Date(v)
-  if (Number.isNaN(d.getTime())) return v
-  return d.toLocaleString('zh-CN', { hour12: false })
+function fmtTime(value?: string | null) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
-async function openScan(a: Account) {
-  scanAccountId.value = a.id
-  scanAccountName.value = a.name
+async function openScan(account: Account) {
+  scanAccountId.value = account.id
+  scanAccountName.value = account.name
   scan.status = 'queuing'
-  scan.message = '正在启动扫码环境…'
+  scan.message = '正在准备登录二维码'
   scan.qrcode = ''
   scan.error = ''
-  dialogVisible.value = true
+  scanDialogVisible.value = true
   try {
-    await scanStart(a.id)
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '发起扫码失败')
-    dialogVisible.value = false
-    return
+    await scanStart(account.id)
+    startPolling()
+  } catch (error: unknown) {
+    scanDialogVisible.value = false
+    ElMessage.error(getErrorMessage(error, '扫码登录启动失败'))
   }
-  startPolling()
 }
 
 function startPolling() {
@@ -148,10 +168,7 @@ async function poll() {
   if (!scanAccountId.value) return
   try {
     const { data } = await scanStatus(scanAccountId.value)
-    scan.status = data.status
-    scan.message = data.message
-    scan.qrcode = data.qrcode
-    scan.error = data.error
+    Object.assign(scan, data)
     if (['success', 'failed', 'expired', 'cancelled'].includes(data.status)) {
       stopPolling()
       if (data.status === 'success') {
@@ -159,9 +176,9 @@ async function poll() {
         await load()
       }
     }
-  } catch (e: any) {
+  } catch (error: unknown) {
     stopPolling()
-    ElMessage.error(e?.response?.data?.detail || '查询扫码状态失败')
+    ElMessage.error(getErrorMessage(error, '登录状态查询失败'))
   }
 }
 
@@ -173,122 +190,131 @@ function stopPolling() {
   }
 }
 
-async function closeDialog() {
+async function closeScan() {
   if (polling.value) {
-    scanning.value = true
-    try {
-      await scanCancel(scanAccountId.value)
-    } catch {
-      /* 忽略 */
-    } finally {
-      scanning.value = false
-    }
+    cancellingScan.value = true
+    try { await scanCancel(scanAccountId.value) } catch { /* 扫码可能已结束 */ }
+    cancellingScan.value = false
     stopPolling()
   }
-  dialogVisible.value = false
+  scanDialogVisible.value = false
 }
 
-async function doCheck(a: Account) {
+async function retryScan() {
+  const account = accounts.value.find((item) => item.id === scanAccountId.value)
+  await closeScan()
+  if (account) await openScan(account)
+}
+
+async function doCheck(account: Account) {
   try {
-    const { data } = await checkLogin(a.id)
-    if (data.logged_in) {
-      ElMessage.success('登录状态正常')
-    } else {
-      ElMessage.warning(data.reason || '未登录')
-    }
+    const { data } = await checkLogin(account.id)
+    if (data.logged_in) ElMessage.success('登录状态正常')
+    else ElMessage.warning(data.reason || '账号未登录')
     await load()
-  } catch (e: any) {
-    ElMessage.error(e?.response?.data?.detail || '检测登录失败')
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '登录状态检测失败'))
   }
+}
+
+function handleCommand(command: string, account: Account) {
+  if (command === 'check') void doCheck(account)
+  if (command === 'rename') void rename(account)
+  if (command === 'delete') void del(account)
 }
 
 onMounted(load)
+onUnmounted(stopPolling)
 </script>
 
 <template>
-  <div>
-    <el-card class="block">
-      <template #header>新增账号</template>
-      <el-form inline>
-        <el-form-item label="账号名称">
-          <el-input v-model="form.name" style="width: 200px" placeholder="例如：我的抖音" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="form.device" style="width: 240px" placeholder="可选，用于标识设备" />
-        </el-form-item>
-        <el-button type="primary" @click="add">新增</el-button>
+  <div class="page">
+    <div class="page-header">
+      <div><h1 class="page-title">账号管理</h1><p class="page-description">添加抖音账号并保持登录状态。账号正常后才能同步联系人和执行任务。</p></div>
+      <div class="page-actions"><el-button type="primary" :icon="Plus" @click="openCreate">添加账号</el-button></div>
+    </div>
+
+    <section class="surface">
+      <div class="section-header">
+        <div><h2 class="section-title">抖音账号</h2><p class="section-description">共 {{ accounts.length }} 个账号</p></div>
+      </div>
+
+      <el-skeleton v-if="loading" :rows="5" animated class="loading-block" />
+      <div v-else-if="accounts.length" class="account-list">
+        <div v-for="account in accounts" :key="account.id" class="account-row">
+          <span class="account-avatar"><el-icon><UserFilled /></el-icon></span>
+          <div class="account-name"><strong>{{ account.name }}</strong><small>{{ account.device || account.id }}</small></div>
+          <div class="account-time"><span>下次任务</span><strong>{{ fmtTime(account.next_run) }}</strong></div>
+          <el-tag :type="accountStatus(account).type" size="small">{{ accountStatus(account).label }}</el-tag>
+          <el-switch v-model="account.enabled" aria-label="启用账号" @change="toggle(account)" />
+          <el-button :type="accountStatus(account).type === 'danger' ? 'primary' : 'default'" size="small" @click="openScan(account)">{{ accountStatus(account).type === 'danger' ? '扫码登录' : '重新登录' }}</el-button>
+          <el-dropdown trigger="click" @command="handleCommand($event, account)">
+            <el-button text :icon="MoreFilled" aria-label="更多操作" />
+            <template #dropdown><el-dropdown-menu><el-dropdown-item command="check">检测登录状态</el-dropdown-item><el-dropdown-item command="rename">修改名称</el-dropdown-item><el-dropdown-item divided command="delete">删除账号</el-dropdown-item></el-dropdown-menu></template>
+          </el-dropdown>
+        </div>
+      </div>
+      <div v-else class="empty-panel">
+        <el-icon><UserFilled /></el-icon><h3>还没有抖音账号</h3><p>添加账号并扫码登录，之后就能同步联系人。</p><el-button type="primary" :icon="Plus" @click="openCreate">添加第一个账号</el-button>
+      </div>
+    </section>
+
+    <el-dialog v-model="createDialogVisible" title="添加账号" width="420px" align-center :close-on-click-modal="false">
+      <el-form label-position="top" @submit.prevent="add">
+        <el-form-item label="账号名称" required><el-input v-model="form.name" autofocus placeholder="例如：主账号" @keyup.enter="add" /></el-form-item>
+        <el-form-item label="备注（可选）"><el-input v-model="form.device" placeholder="例如：办公室电脑" @keyup.enter="add" /></el-form-item>
       </el-form>
-    </el-card>
+      <template #footer><el-button @click="createDialogVisible = false">取消</el-button><el-button type="primary" :loading="saving" @click="add">添加并继续</el-button></template>
+    </el-dialog>
 
-    <el-card class="block">
-      <template #header>抖音账号</template>
-      <el-table v-loading="loading" :data="accounts" empty-text="暂无账号">
-        <el-table-column prop="name" label="名称" min-width="140" />
-        <el-table-column prop="id" label="账号ID" width="160" />
-        <el-table-column label="登录状态" width="120">
-          <template #default="{ row }">
-            <el-tag :type="accountStatus(row).type">{{ accountStatus(row).label }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="最后运行" width="180">
-          <template #default="{ row }">{{ fmtTime(row.last_run) }}</template>
-        </el-table-column>
-        <el-table-column label="下次任务" width="180">
-          <template #default="{ row }">{{ fmtTime(row.next_run) }}</template>
-        </el-table-column>
-        <el-table-column label="启用" width="80">
-          <template #default="{ row }">
-            <el-switch v-model="row.enabled" @change="toggle(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="260" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openScan(row)">扫码登录</el-button>
-            <el-button link @click="doCheck(row)">检测登录</el-button>
-            <el-button link @click="rename(row)">重命名</el-button>
-            <el-button link type="danger" @click="del(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
-    <el-dialog
-      v-model="dialogVisible"
-      :title="`扫码登录 - ${scanAccountName}`"
-      width="420px"
-      :close-on-click-modal="false"
-      :close-on-press-escape="false"
-      @close="closeDialog"
-    >
-      <div class="scan-body">
-        <template v-if="scan.status === 'success'">
-          <el-result icon="success" title="登录成功" :sub-title="scan.message" />
-        </template>
-        <template v-else-if="['failed', 'expired', 'cancelled'].includes(scan.status)">
-          <el-result icon="error" :title="scanLabel(scan.status)" :sub-title="scan.error || scan.message" />
-        </template>
+    <el-dialog v-model="scanDialogVisible" :title="`扫码登录 · ${scanAccountName}`" width="420px" align-center :close-on-click-modal="false" :close-on-press-escape="false" @close="closeScan">
+      <div class="scan-content">
+        <el-result v-if="scan.status === 'success'" icon="success" title="登录成功" sub-title="现在可以同步联系人和执行任务了" />
+        <el-result v-else-if="['failed', 'expired', 'cancelled'].includes(scan.status)" icon="error" :title="scanLabel(scan.status)" :sub-title="scan.error || scan.message" />
         <template v-else>
-          <div class="qr-wrap">
-            <img v-if="scan.qrcode" :src="scan.qrcode" alt="登录二维码" class="qr" />
-            <div v-else class="qr-loading">
-              <el-icon class="is-loading" size="40"><Loading /></el-icon>
-              <span>{{ scan.message || '正在启动扫码环境…' }}</span>
-            </div>
+          <div class="qr-area">
+            <img v-if="scan.qrcode" :src="scan.qrcode" alt="抖音登录二维码" />
+            <div v-else><el-icon class="is-loading"><Loading /></el-icon><span>{{ scan.message }}</span></div>
           </div>
-          <p class="scan-tip">{{ scanLabel(scan.status) }} · {{ scan.message }}</p>
+          <p>打开抖音扫一扫，扫码后会自动完成登录。</p>
         </template>
       </div>
-      <template #footer>
-        <el-button type="primary" :loading="scanning" @click="closeDialog">关闭</el-button>
-      </template>
+      <template #footer><el-button v-if="['failed', 'expired', 'cancelled'].includes(scan.status)" @click="retryScan">重新扫码</el-button><el-button type="primary" :loading="cancellingScan" @click="closeScan">{{ scan.status === 'success' ? '完成' : '取消' }}</el-button></template>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
-.block + .block { margin-top: 16px; }
-.qr-wrap { display: flex; flex-direction: column; align-items: center; padding: 12px 0; }
-.qr { width: 260px; height: 260px; object-fit: contain; background: #f8fafc; border-radius: 8px; }
-.qr-loading { display: flex; flex-direction: column; align-items: center; gap: 12px; color: #64748b; padding: 60px 0; }
-.scan-tip { margin: 12px 0 0; text-align: center; color: #475569; }
+.loading-block { padding: 24px 20px; }
+.account-list { padding: 0 20px; }
+.account-row { display: grid; grid-template-columns: 38px minmax(150px, 1fr) 150px auto auto auto 36px; align-items: center; gap: 14px; min-height: 72px; border-bottom: 1px solid var(--color-border); }
+.account-row:last-child { border-bottom: 0; }
+.account-avatar { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 50%; color: var(--color-text-secondary); background: var(--color-surface-muted); }
+.account-name { min-width: 0; }
+.account-name strong, .account-name small, .account-time span, .account-time strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-name strong { font-size: 13px; }
+.account-name small, .account-time span { margin-top: 4px; color: var(--color-text-secondary); font-size: 10px; }
+.account-time strong { margin-top: 4px; font-size: 11px; font-weight: 600; }
+.scan-content { min-height: 300px; }
+.qr-area { display: grid; min-height: 260px; place-items: center; border-radius: 10px; background: var(--color-surface-muted); }
+.qr-area img { width: 240px; height: 240px; object-fit: contain; }
+.qr-area > div { display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--color-text-secondary); font-size: 12px; }
+.qr-area .el-icon { font-size: 34px; }
+.scan-content > p { margin: 14px 0 0; color: var(--color-text-secondary); font-size: 12px; text-align: center; }
+
+@media (max-width: 820px) {
+  .account-row { grid-template-columns: 36px minmax(0, 1fr) auto auto; gap: 10px; padding: 14px 0; }
+  .account-time { display: none; }
+  .account-row > .el-switch { grid-column: 2; justify-self: start; }
+  .account-row > .el-button { grid-column: 3; }
+  .account-row > .el-dropdown { grid-column: 4; }
+}
+@media (max-width: 480px) {
+  .account-list { padding: 0 14px; }
+  .account-row { grid-template-columns: 34px minmax(0, 1fr) auto; }
+  .account-row > .el-tag { grid-column: 3; }
+  .account-row > .el-switch { grid-column: 2; }
+  .account-row > .el-button { grid-column: 2 / 3; justify-self: start; }
+  .account-row > .el-dropdown { grid-column: 3; grid-row: 2; }
+}
 </style>
