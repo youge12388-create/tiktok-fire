@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --color-bg: #10141b;
   --color-surface: #171d26;
   --color-surface-muted: #1d2530;
@@ -20,13 +21,30 @@
   --color-sidebar-surface: #1b222c;
   --color-sidebar-text: #e0e5eb;
   --color-sidebar-muted: #8490a0;
+  --color-topbar: rgba(16, 20, 27, 0.96);
+  --color-nav-hover: rgba(255, 255, 255, 0.06);
+  --color-sidebar-divider: rgba(255, 255, 255, 0.11);
+  --color-table-hover: #202934;
+  --color-info-soft: #252d38;
+  --color-info-text: #aab4c1;
+  --color-warning-border: #554322;
+  --color-danger-border: #5a2937;
+  --color-switch-off: #3a4655;
+  --color-on-primary: #fff;
+  --color-fill-lighter: #232c38;
+  --color-fill: #252e39;
+  --el-color-primary: var(--color-primary);
+  --el-color-success: var(--color-success);
+  --el-color-warning: var(--color-warning);
+  --el-color-danger: var(--color-danger);
+  --el-color-info: var(--color-text-secondary);
   --el-bg-color: var(--color-surface);
   --el-bg-color-page: var(--color-bg);
   --el-bg-color-overlay: var(--color-surface);
   --el-fill-color-blank: var(--color-surface);
   --el-fill-color-light: var(--color-surface-muted);
-  --el-fill-color-lighter: #232c38;
-  --el-fill-color: #252e39;
+  --el-fill-color-lighter: var(--color-fill-lighter);
+  --el-fill-color: var(--color-fill);
   --el-text-color-primary: var(--color-text);
   --el-text-color-regular: var(--color-text-secondary);
   --el-text-color-secondary: var(--color-text-tertiary);
@@ -39,12 +57,53 @@
   text-rendering: optimizeLegibility;
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-bg: #f3f5f7;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f7f8fa;
+  --color-text: #17202b;
+  --color-text-secondary: #667282;
+  --color-text-tertiary: #8b96a5;
+  --color-border: #e0e5eb;
+  --color-border-strong: #c8d0da;
+  --color-primary: #df3659;
+  --color-primary-hover: #c9294a;
+  --color-primary-soft: #fff0f3;
+  --color-success: #2f9c7c;
+  --color-success-soft: #e8f6f1;
+  --color-warning: #a66f18;
+  --color-warning-soft: #fff6e6;
+  --color-danger: #cf5363;
+  --color-danger-soft: #fff0f2;
+  --color-sidebar: #f8f9fb;
+  --color-sidebar-surface: #eaedf2;
+  --color-sidebar-text: #202a36;
+  --color-sidebar-muted: #6f7d8d;
+  --color-topbar: rgba(243, 245, 247, 0.94);
+  --color-nav-hover: rgba(23, 32, 43, 0.06);
+  --color-sidebar-divider: rgba(23, 32, 43, 0.1);
+  --color-table-hover: #f5f7fa;
+  --color-info-soft: #edf1f5;
+  --color-info-text: #596676;
+  --color-warning-border: #f0d7a7;
+  --color-danger-border: #efbec7;
+  --color-switch-off: #bac3ce;
+  --color-fill-lighter: #eef1f5;
+  --color-fill: #eef1f5;
+}
+
 * { box-sizing: border-box; }
 html, body, #app { min-width: 320px; min-height: 100%; margin: 0; }
+html { scrollbar-color: var(--color-border-strong) var(--color-bg); }
 body { background: var(--color-bg); }
-button, input, textarea { font: inherit; }
+button, input, textarea { font: inherit; caret-color: var(--color-primary); }
 a { color: inherit; text-decoration: none; }
-::selection { color: #fff; background: var(--color-primary); }
+::selection { color: var(--color-on-primary); background: var(--color-primary); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--color-bg); }
+::-webkit-scrollbar-thumb { border: 3px solid var(--color-bg); border-radius: 999px; background: var(--color-border-strong); }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-tertiary); }
 
 :focus-visible {
   outline: 3px solid rgba(237, 61, 98, 0.35);
@@ -112,7 +171,7 @@ a { color: inherit; text-decoration: none; }
   --el-table-bg-color: transparent;
   --el-table-tr-bg-color: transparent;
   --el-table-header-bg-color: var(--color-surface-muted);
-  --el-table-row-hover-bg-color: #202934;
+  --el-table-row-hover-bg-color: var(--color-table-hover);
   --el-table-text-color: var(--color-text);
   --el-table-header-text-color: var(--color-text-secondary);
   color: var(--color-text);
@@ -123,11 +182,10 @@ a { color: inherit; text-decoration: none; }
 .el-tag--success { --el-tag-bg-color: var(--color-success-soft); --el-tag-text-color: #26765a; --el-tag-border-color: transparent; }
 .el-tag--warning { --el-tag-bg-color: var(--color-warning-soft); --el-tag-text-color: #936319; --el-tag-border-color: transparent; }
 .el-tag--danger { --el-tag-bg-color: var(--color-danger-soft); --el-tag-text-color: #a93846; --el-tag-border-color: transparent; }
-.el-tag--info { --el-tag-bg-color: #eeece9; --el-tag-text-color: #5f6670; --el-tag-border-color: transparent; }
-.el-tag--info { --el-tag-bg-color: #252d38; --el-tag-text-color: #aab4c1; }
+.el-tag--info { --el-tag-bg-color: var(--color-info-soft); --el-tag-text-color: var(--color-info-text); --el-tag-border-color: transparent; }
 .el-alert { border-radius: 10px; }
-.el-alert--warning.is-light { --el-alert-bg-color: var(--color-warning-soft); --el-alert-border-color: #554322; --el-alert-text-color: #e1b467; }
-.el-alert--error.is-light { --el-alert-bg-color: var(--color-danger-soft); --el-alert-border-color: #5a2937; --el-alert-text-color: #f09aaa; }
+.el-alert--warning.is-light { --el-alert-bg-color: var(--color-warning-soft); --el-alert-border-color: var(--color-warning-border); --el-alert-text-color: var(--color-warning); }
+.el-alert--error.is-light { --el-alert-bg-color: var(--color-danger-soft); --el-alert-border-color: var(--color-danger-border); --el-alert-text-color: var(--color-danger); }
 .el-alert--info.is-light { --el-alert-bg-color: var(--color-surface-muted); --el-alert-border-color: var(--color-border); --el-alert-text-color: var(--color-text-secondary); }
 .el-dialog { border-radius: 14px; background: var(--color-surface); }
 .el-message { border-radius: 9px; }
@@ -135,7 +193,7 @@ a { color: inherit; text-decoration: none; }
 .el-collapse, .el-collapse-item__header, .el-collapse-item__wrap { border-color: var(--color-border); color: var(--color-text); background: transparent; }
 .el-collapse-item__content { color: var(--color-text-secondary); }
 .el-pagination { --el-pagination-bg-color: transparent; --el-pagination-text-color: var(--color-text-secondary); --el-pagination-button-color: var(--color-text-secondary); --el-pagination-hover-color: var(--color-primary); }
-.el-switch { --el-switch-on-color: var(--color-primary); --el-switch-off-color: #3a4655; }
+.el-switch { --el-switch-on-color: var(--color-primary); --el-switch-off-color: var(--color-switch-off); }
 
 @media (max-width: 768px) {
   .page-header { align-items: stretch; flex-direction: column; gap: 14px; margin-bottom: 18px; }

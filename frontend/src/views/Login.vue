@@ -37,7 +37,7 @@ async function submit() {
       <div class="product-mark" aria-hidden="true">
         <el-icon><ChatDotRound /></el-icon>
       </div>
-      <div class="product-name">抖音私信助手</div>
+      <div class="product-name">抖音续火花助手</div>
       <h1 id="login-title">登录</h1>
       <p class="login-description">登录后管理抖音账号和续火任务。</p>
 
