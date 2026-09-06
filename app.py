@@ -67,8 +67,6 @@ def _pid_alive(pid: int) -> bool:
         except Exception:
             return False
     try:
-        import os
-
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
