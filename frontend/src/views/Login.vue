@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatDotRound } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
+import BrandHeader from '@/components/login/BrandHeader.vue'
+import DigitalWave from '@/components/login/DigitalWave.vue'
+import HeroSection from '@/components/login/HeroSection.vue'
+import LoginForm from '@/components/login/LoginForm.vue'
+import SystemStatus from '@/components/login/SystemStatus.vue'
 import { getErrorMessage } from '@/api/errors'
 import { useAuthStore } from '@/stores/auth'
 
@@ -10,21 +14,30 @@ const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
 const loading = ref(false)
+const formError = ref('')
 const form = reactive({ username: 'admin', password: '' })
+
+function clearError() {
+  formError.value = ''
+}
 
 async function submit() {
   if (!form.username.trim() || !form.password) {
+    formError.value = '请输入管理员用户名和密码后再继续。'
     ElMessage.warning('请输入用户名和密码')
     return
   }
 
+  formError.value = ''
   loading.value = true
   try {
     await auth.login(form.username.trim(), form.password)
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/dashboard'
     await router.push(redirect)
   } catch (error: unknown) {
-    ElMessage.error(getErrorMessage(error, '登录失败，请检查用户名和密码'))
+    const message = getErrorMessage(error, '登录失败，请检查用户名和密码')
+    formError.value = `${message}。请核对后重试。`
+    ElMessage.error(message)
   } finally {
     loading.value = false
   }
@@ -33,131 +46,158 @@ async function submit() {
 
 <template>
   <main class="login-page">
-    <section class="login-box" aria-labelledby="login-title">
-      <div class="product-mark" aria-hidden="true">
-        <el-icon><ChatDotRound /></el-icon>
-      </div>
-      <div class="product-name">抖音续火花助手</div>
-      <h1 id="login-title">登录</h1>
-      <p class="login-description">登录后管理抖音账号和续火任务。</p>
+    <DigitalWave class="login-page__wave" />
+    <BrandHeader />
 
-      <el-form label-position="top" @submit.prevent="submit">
-        <el-form-item label="用户名">
-          <el-input
-            v-model="form.username"
-            size="large"
-            autocomplete="username"
-            placeholder="请输入用户名"
-          />
-        </el-form-item>
-        <el-form-item label="密码">
-          <el-input
-            v-model="form.password"
-            size="large"
-            type="password"
-            show-password
-            autocomplete="current-password"
-            placeholder="请输入密码"
-            @keyup.enter="submit"
-          />
-        </el-form-item>
-        <el-button
-          type="primary"
-          size="large"
-          class="submit-button"
-          :loading="loading"
-          native-type="submit"
-        >
-          登录
-        </el-button>
-      </el-form>
+    <div class="login-page__main">
+      <HeroSection />
 
-      <p class="login-note">仅限授权管理员使用</p>
-    </section>
+      <section class="login-page__auth" aria-label="管理员登录">
+        <div class="login-page__registration" aria-hidden="true">
+          <i></i><i></i><i></i>
+        </div>
+
+        <div class="login-page__auth-inner">
+          <LoginForm
+            v-model:username="form.username"
+            v-model:password="form.password"
+            :loading="loading"
+            :error="formError"
+            @change="clearError"
+            @submit="submit"
+          />
+        </div>
+
+        <SystemStatus class="login-page__status" />
+      </section>
+    </div>
   </main>
 </template>
 
 <style scoped>
 .login-page {
-  display: grid;
+  position: relative;
+  isolation: isolate;
+  --login-dark: #090b0d;
+  --login-light: #f2efe7;
+  --login-text-dark: #111111;
+  --login-text-light: #f4f4f4;
+  --login-muted: #8a8d91;
+  --login-brand: #f43f5e;
+  --login-cyan: #15c7e8;
+  --login-yellow: #f5c842;
+  --login-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  --login-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  min-width: 320px;
   min-height: 100vh;
-  place-items: center;
-  padding: 32px 20px;
-  background: var(--color-bg);
+  min-height: 100dvh;
+  overflow-x: clip;
+  color: var(--login-text-light);
+  background: var(--login-dark);
 }
 
-.login-box {
-  width: min(100%, 400px);
-  padding: 42px;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 16px;
-  background: var(--color-surface);
-}
-
-.product-mark {
+.login-page__main {
+  position: relative;
   display: grid;
-  width: 42px;
-  height: 42px;
-  margin-bottom: 16px;
+  height: calc(100vh - 64px);
+  height: calc(100dvh - 64px);
+  min-height: 650px;
+  overflow: hidden;
+  background: transparent;
+  grid-template-columns: minmax(0, 56fr) minmax(0, 44fr);
+  isolation: isolate;
+}
+
+.login-page__wave {
+  z-index: 0;
+}
+
+.login-page__auth {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
   place-items: center;
-  border-radius: 12px;
-  color: #fff;
-  background: var(--color-primary);
-  font-size: 22px;
 }
 
-.product-name {
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  font-weight: 600;
+.login-page__auth::before {
+  position: absolute;
+  inset: 12% 8%;
+  background: radial-gradient(ellipse at center, rgba(9, 11, 13, 0.38), rgba(9, 11, 13, 0.12) 60%, transparent 78%);
+  content: "";
+  pointer-events: none;
 }
 
-h1 {
-  margin: 10px 0 0;
-  color: var(--color-text);
-  font-size: 30px;
-  line-height: 1.3;
-  letter-spacing: -0.03em;
+.login-page__auth-inner {
+  position: relative;
+  z-index: 2;
+  width: min(420px, calc(100% - 64px));
+  margin-top: -28px;
 }
 
-.login-description {
-  margin: 10px 0 32px;
-  color: var(--color-text-secondary);
-  font-size: 14px;
+.login-page__registration {
+  position: absolute;
+  top: 31px;
+  right: clamp(28px, 4vw, 62px);
+  display: flex;
+  gap: 7px;
+  pointer-events: none;
 }
 
-.login-box :deep(.el-form-item) {
-  margin-bottom: 20px;
+.login-page__registration i { width: 5px; height: 5px; background: #34383d; }
+.login-page__registration i:nth-child(1) { background: var(--login-cyan); }
+.login-page__registration i:nth-child(3) { background: var(--login-yellow); }
+
+.login-page__status {
+  position: absolute;
+  z-index: 2;
+  right: clamp(28px, 4vw, 62px);
+  bottom: 24px;
+  left: clamp(28px, 4vw, 62px);
 }
 
-.login-box :deep(.el-form-item__label) {
-  color: var(--color-text);
-  font-size: 13px;
-  font-weight: 600;
+@media (max-width: 1200px) and (min-width: 768px) {
+  .login-page__main { grid-template-columns: minmax(0, 51fr) minmax(0, 49fr); }
+  .login-page__auth-inner { width: min(420px, calc(100% - 64px)); }
 }
 
-.submit-button {
-  width: 100%;
-  height: 44px;
-}
-
-.login-note {
-  margin: 20px 0 0;
-  color: var(--color-text-tertiary);
-  font-size: 12px;
-  text-align: center;
-}
-
-@media (max-width: 480px) {
-  .login-page {
-    align-items: start;
-    padding: 56px 16px 24px;
-    background: var(--color-surface);
+@media (max-width: 767px) {
+  .login-page__main {
+    display: flex;
+    height: auto;
+    min-height: 0;
+    flex-direction: column;
   }
 
-  .login-box {
-    padding: 0 4px;
-    border: 0;
+  .login-page__wave { position: absolute; inset: 0; }
+
+  .login-page__auth {
+    order: 2;
+    display: block;
+    min-height: 540px;
+    padding: 36px 22px 82px;
   }
+
+  .login-page__auth::before {
+    inset: 0;
+    background: radial-gradient(ellipse at center, rgba(9, 11, 13, 0.36), transparent 78%);
+  }
+
+  .login-page__auth-inner {
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  .login-page__registration { top: 22px; right: 22px; }
+  .login-page__status { right: 22px; bottom: 28px; left: 22px; }
 }
+
+@media (max-width: 390px) {
+  .login-page__auth { padding-right: 20px; padding-left: 20px; }
+  .login-page__status { right: 20px; left: 20px; }
+}
+
 </style>
