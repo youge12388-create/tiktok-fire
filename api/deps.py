@@ -22,8 +22,12 @@ def require_admin(request: Request) -> str:
 class CSRFMiddleware(BaseHTTPMiddleware):
     """对携带会话 Cookie 的状态变更请求做 Origin / Sec-Fetch-Site 校验。"""
 
+    def __init__(self, app, session_cookie: str = "session"):
+        super().__init__(app)
+        self.session_cookie = session_cookie
+
     async def dispatch(self, request: Request, call_next):
-        if request.method in UNSAFE_METHODS and request.cookies.get("session"):
+        if request.method in UNSAFE_METHODS and request.cookies.get(self.session_cookie):
             site = request.headers.get("sec-fetch-site")
             origin = request.headers.get("origin")
             host = request.headers.get("host", "")

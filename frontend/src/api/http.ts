@@ -1,7 +1,8 @@
 import axios from 'axios'
+import { apiBaseUrl } from './base'
 
 const http = axios.create({
-  baseURL: '/api/v1',
+  baseURL: apiBaseUrl,
   withCredentials: true,
   timeout: 60000
 })

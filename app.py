@@ -25,6 +25,8 @@ from app_config import (
     DATA_DIR,
     HOST,
     PORT,
+    SESSION_COOKIE_NAME,
+    SESSION_COOKIE_PATH,
     SESSION_MAX_AGE,
     SESSION_SECRET,
     security_problems,
@@ -141,12 +143,13 @@ app = FastAPI(title="Douyin Cloud Streak", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=SESSION_SECRET,
-    session_cookie="session",
+    session_cookie=SESSION_COOKIE_NAME,
+    path=SESSION_COOKIE_PATH,
     same_site="lax",
     https_only=COOKIE_SECURE,
     max_age=SESSION_MAX_AGE,
 )
-app.add_middleware(CSRFMiddleware)
+app.add_middleware(CSRFMiddleware, session_cookie=SESSION_COOKIE_NAME)
 
 app.include_router(api_router)
 

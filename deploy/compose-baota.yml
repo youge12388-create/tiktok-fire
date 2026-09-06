@@ -1,7 +1,11 @@
+# 宝塔「Docker → 容器编排」表单使用的部署 Compose。
+# 先将不含 .env 与 data 的源码解压至 /opt/douyin-cloud-streak，
+# 再把本文件内容粘贴到表单；表单内的 .env 内容由宝塔私有保存。
+
 services:
   douyin-cloud-streak:
     build:
-      context: .
+      context: /opt/douyin-cloud-streak
       args:
         VITE_BASE_PATH: ${PUBLIC_BASE_PATH:-/}
     container_name: douyin-cloud-streak
@@ -9,17 +13,15 @@ services:
     init: true
     stop_grace_period: 30s
     ports:
-      # 8000 已被同机既有服务使用；仅在本机暴露独立端口，由 Nginx 子路径反代。
       - "127.0.0.1:8011:8000"
     shm_size: 1gb
     env_file:
       - .env
     environment:
       - TZ=Asia/Shanghai
-      # 容器内监听所有接口以配合端口映射；宿主机仍只绑定 127.0.0.1，不暴露公网
       - HOST=0.0.0.0
     volumes:
-      - ./data:/app/data
+      - /opt/douyin-cloud-streak/data:/app/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/system/health', timeout=3).read()"]
       interval: 30s

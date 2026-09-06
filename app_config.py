@@ -34,6 +34,40 @@ SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip()
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE", str(7 * 24 * 3600)))
 
+
+def _normalize_public_base_path(value: str) -> str:
+    """规范化可选的反向代理挂载前缀；根路径统一用空串表示。"""
+    path = value.strip()
+    if path in {"", "/"}:
+        return ""
+    if (
+        not path.startswith("/")
+        or path.startswith("//")
+        or "//" in path
+        or any(char in path for char in ("?", "#", "\\"))
+        or any(part in {".", ".."} for part in path.split("/"))
+    ):
+        return path
+    return path.rstrip("/")
+
+
+def _is_safe_url_path(value: str, *, allow_empty: bool) -> bool:
+    if not value:
+        return allow_empty
+    return (
+        value.startswith("/")
+        and not value.startswith("//")
+        and "//" not in value
+        and not any(char in value for char in ("?", "#", "\\"))
+        and all(part not in {".", ".."} for part in value.split("/"))
+    )
+
+
+PUBLIC_BASE_PATH = _normalize_public_base_path(os.getenv("PUBLIC_BASE_PATH", ""))
+SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "session").strip() or "session"
+_DEFAULT_SESSION_COOKIE_PATH = f"{PUBLIC_BASE_PATH}/" if PUBLIC_BASE_PATH else "/"
+SESSION_COOKIE_PATH = os.getenv("SESSION_COOKIE_PATH", _DEFAULT_SESSION_COOKIE_PATH).strip() or _DEFAULT_SESSION_COOKIE_PATH
+
 PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "127.0.0.1").strip() or "127.0.0.1"
 
@@ -47,4 +81,8 @@ def security_problems() -> list[str]:
         problems.append("ADMIN_PASSWORD 过弱，不能使用 admin/123456/password 等默认密码")
     if not SESSION_SECRET or len(SESSION_SECRET) < 16:
         problems.append("SESSION_SECRET 缺失或过短，请设置至少 32 位随机字符串")
+    if not _is_safe_url_path(PUBLIC_BASE_PATH, allow_empty=True):
+        problems.append("PUBLIC_BASE_PATH 必须是以 / 开头的路径前缀，例如 /douyin-fire")
+    if not _is_safe_url_path(SESSION_COOKIE_PATH, allow_empty=False):
+        problems.append("SESSION_COOKIE_PATH 必须是以 / 开头的 Cookie 路径")
     return problems

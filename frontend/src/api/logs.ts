@@ -1,4 +1,5 @@
 import http from './http'
+import { withAppBasePath } from './base'
 import type { RunRecord, RunItem } from '@/types'
 
 export interface RunDetail extends RunRecord {
@@ -14,5 +15,5 @@ export function getRun(id: number) {
 }
 
 export function getRunArtifact(runId: number) {
-  return `/api/v1/runs/${runId}/artifact`
+  return withAppBasePath(`/api/v1/runs/${runId}/artifact`)
 }

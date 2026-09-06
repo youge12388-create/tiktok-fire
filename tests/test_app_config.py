@@ -33,3 +33,22 @@ def test_weak_default_passwords_all_flagged():
             assert any("过弱" in p for p in app_config.security_problems()), weak
     finally:
         app_config.ADMIN_PASSWORD = original
+
+
+def test_invalid_public_base_paths_flagged():
+    original = app_config.PUBLIC_BASE_PATH
+    try:
+        for invalid_path in ("douyin-fire", "//douyin-fire", "/douyin/../fire"):
+            app_config.PUBLIC_BASE_PATH = invalid_path
+            assert any("PUBLIC_BASE_PATH" in p for p in app_config.security_problems())
+    finally:
+        app_config.PUBLIC_BASE_PATH = original
+
+
+def test_invalid_session_cookie_path_flagged():
+    original = app_config.SESSION_COOKIE_PATH
+    try:
+        app_config.SESSION_COOKIE_PATH = "douyin-fire"
+        assert any("SESSION_COOKIE_PATH" in p for p in app_config.security_problems())
+    finally:
+        app_config.SESSION_COOKIE_PATH = original

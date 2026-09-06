@@ -21,13 +21,16 @@ cd frontend && npm run build   # 产出 dist 供 Docker 使用
 
 ### 生产部署（Nginx / HTTPS）
 1. 准备 `.env`（复制 `.env.example`）：填强 `ADMIN_PASSWORD` 与 ≥32 位 `SESSION_SECRET`；走 HTTPS 时把 `COOKIE_SECURE=true`。
-2. `docker compose up -d`：服务只绑定 `127.0.0.1:8000`，数据持久化到 `./data`（镜像重建、重启均不丢设置与登录态）。
+2. `docker compose up -d`：服务只绑定 `127.0.0.1:8011`，数据持久化到 `./data`（镜像重建、重启均不丢设置与登录态）。
 3. 用 Nginx 反向代理对外提供 80/443，示例见 `deploy/nginx-example.conf`；证书可用 `certbot --nginx` 或云厂商免费证书。
-4. 云安全组/防火墙只需放行 80 与 443，**不要直接开放 8000 端口**，后台仅经 HTTPS 访问。
+4. 云安全组/防火墙只需放行 80 与 443，**不要直接开放容器宿主机端口**，后台仅经 HTTPS 访问。
+
+若同一 HTTPS 站点已经承载其他应用，可按 `deploy/nginx-subpath-example.conf` 挂到 `/douyin-fire/`；此时在 `.env` 同步设置该 `PUBLIC_BASE_PATH`、独立 `SESSION_COOKIE_NAME` 和 `COOKIE_SECURE=true`，再重新构建容器。
+宝塔面板的“容器编排”可使用 `deploy/compose-baota.yml`，其源码和数据目录均固定隔离在 `/opt/douyin-cloud-streak`。
 
 ### Docker
 ```bash
-docker compose up -d   # 服务绑定 127.0.0.1:8000，数据持久化到 ./data
+docker compose up -d   # 服务绑定 127.0.0.1:8011，数据持久化到 ./data
 ```
 
 

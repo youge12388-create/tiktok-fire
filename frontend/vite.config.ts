@@ -4,8 +4,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const configuredBase = process.env.VITE_BASE_PATH?.trim() || '/'
+const baseSegments = configuredBase.replace(/^\/+|\/+$/g, '')
+const base = baseSegments ? `/${baseSegments}/` : '/'
 
 export default defineConfig({
+  base,
   plugins: [vue()],
   resolve: {
     alias: {
