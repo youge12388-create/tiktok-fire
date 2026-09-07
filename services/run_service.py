@@ -39,7 +39,9 @@ def _archive_screenshot(result: dict, account_id: str, run_id: int) -> None:
         pass
 
 
-def _derive_status(ok_n: int, failed_n: int, uncertain_n: int, risk: bool) -> str:
+def _derive_status(ok_n: int, failed_n: int, uncertain_n: int, risk: bool, stopped: bool = False) -> str:
+    if stopped:
+        return "uncertain"
     if risk or failed_n or (ok_n == 0 and uncertain_n == 0):
         return "failed"
     if uncertain_n:
@@ -55,16 +57,19 @@ def record_run(result: dict, account_id: str, task_type: str = "spark") -> int:
     failed_n = len(result.get("failed", []))
     uncertain_n = len(result.get("uncertain", []))
     risk = bool(result.get("risk_detected") or result.get("rate_limited"))
+    stopped = bool(result.get("stopped"))
 
     error = None
     for item in result.get("failed", []):
         if isinstance(item, dict) and item.get("name") == "_system":
             error = item.get("reason")
             break
+    if stopped and error is None:
+        error = "已手动停止"
 
     started_at = result.get("at") or _now()
     finished = _now()
-    status = _derive_status(ok_n, failed_n, uncertain_n, risk)
+    status = _derive_status(ok_n, failed_n, uncertain_n, risk, stopped)
     run_id = run_repo.create_run(
         account_id=account_id,
         task_type=task_type,

@@ -27,3 +27,11 @@ export function dryRun(accountId: string) {
 export function runTask(accountId: string) {
   return http.post<{ started: boolean }>(`/accounts/${accountId}/spark-task/run`)
 }
+
+export function toggleAutoRun(accountId: string, enabled: boolean) {
+  return http.post<{ ok: boolean; auto_run_enabled: boolean }>(`/accounts/${accountId}/spark-task/auto-run`, { enabled })
+}
+
+export function stopRun(accountId: string) {
+  return http.post<{ ok: boolean; stopped: boolean }>(`/accounts/${accountId}/spark-task/stop`)
+}

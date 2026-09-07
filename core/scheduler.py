@@ -87,17 +87,22 @@ def apply_schedule(account_id: str | None = None) -> None:
             continue
 
         cfg = load_config(aid)
-        hh, mm = cfg.get("schedule_time", "21:00").split(":")
-        _scheduler.add_job(
-            _daily_job,
-            CronTrigger(hour=int(hh), minute=int(mm), timezone=TZ),
-            args=[aid],
-            id=_job_id(aid, "daily_send"),
-            replace_existing=True,
-            coalesce=True,
-            misfire_grace_time=3600,
-        )
-        logger.info("[%s] 定时任务已更新：每天 %s:%s (%s)", aid, hh, mm, TZ)
+        auto = bool(cfg.get("auto_run_enabled", True))
+        if auto:
+            hh, mm = cfg.get("schedule_time", "21:00").split(":")
+            _scheduler.add_job(
+                _daily_job,
+                CronTrigger(hour=int(hh), minute=int(mm), timezone=TZ),
+                args=[aid],
+                id=_job_id(aid, "daily_send"),
+                replace_existing=True,
+                coalesce=True,
+                misfire_grace_time=3600,
+            )
+            logger.info("[%s] 定时任务已更新：每天 %s:%s (%s)", aid, hh, mm, TZ)
+        else:
+            _remove_job(_job_id(aid, "daily_send"))
+            logger.info("[%s] 自动运行已关闭，已移除每日定时任务", aid)
 
         # 周级 creator 抖音号采集（默认周一 03:00；off/空 = 关闭）
         day = str(cfg.get("schedule_harvest_day") or "off").strip().lower()

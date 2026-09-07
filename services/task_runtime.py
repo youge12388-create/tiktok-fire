@@ -27,6 +27,7 @@ def start_run(account_id: str, dry: bool = False, only_names: list[str] | None =
 
 def _run_worker(account_id: str, dry: bool, only_names: list[str] | None) -> None:
     try:
+        update_runtime(account_id, stop_requested=False)
         set_running(True, account_id)
         try:
             result = douyin.run_spark(account_id, dry_run=dry, only_names=only_names)
@@ -37,6 +38,7 @@ def _run_worker(account_id: str, dry: bool, only_names: list[str] | None) -> Non
                 scheduler.cancel_retry(account_id)
         finally:
             set_running(False, account_id)
+            update_runtime(account_id, stop_requested=False)
     except Exception as exc:  # noqa: BLE001
         logger.exception("[%s] 发送任务异常: %s", account_id, exc)
     finally:
@@ -114,6 +116,14 @@ def _harvest_worker(account_id: str) -> None:
         record_harvest(harvest_last, account_id)
     finally:
         harvesting.discard(account_id)
+
+
+def request_stop(account_id: str) -> bool:
+    """请求中断当前运行中的任务；没有运行任务时返回 False。"""
+    if not lock_for(account_id).locked():
+        return False
+    update_runtime(account_id, stop_requested=True)
+    return True
 
 
 def configured_run_cb() -> object:

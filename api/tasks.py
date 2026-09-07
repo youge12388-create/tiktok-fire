@@ -1,4 +1,4 @@
-"""续火任务配置 / Dry Run / 手动执行。"""
+"""续火任务配置 / Dry Run / 手动执行 / 自动运行开关。"""
 
 from __future__ import annotations
 
@@ -15,6 +15,11 @@ router = APIRouter(prefix="/accounts/{account_id}/spark-task", tags=["tasks"], d
 class TaskBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     config: dict
+
+
+class AutoRunBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
 
 
 def _resolve(account_id: str) -> str:
@@ -54,3 +59,16 @@ def dry_run(account_id: str):
 def run(account_id: str):
     aid = _resolve(account_id)
     return _run(lambda: spark_service.run(aid))
+
+
+@router.post("/auto-run")
+def toggle_auto_run(account_id: str, body: AutoRunBody):
+    aid = _resolve(account_id)
+    merged = spark_service.set_auto_run(aid, body.enabled)
+    return {"ok": True, "auto_run_enabled": bool(merged.get("auto_run_enabled"))}
+
+
+@router.post("/stop")
+def stop_run(account_id: str):
+    aid = _resolve(account_id)
+    return spark_service.stop(aid)

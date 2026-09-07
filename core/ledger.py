@@ -398,6 +398,27 @@ def mark_no_consumer_conversation(display_name: str, account_id: str | None = No
         _save(entries, account_id)
 
 
+def remove_contacts(names: list[str], account_id: str | None = None) -> dict:
+    """从台账删除指定联系人（按 display_name）。
+
+    仅清理台账条目；调用方负责同步清理 config.friends，避免选择状态残留。
+    返回 {"removed", "total"}。
+    """
+    remove = {str(n).strip() for n in (names or []) if str(n).strip()}
+    if not remove:
+        return {"removed": 0, "total": len(load_ledger(account_id))}
+    entries = load_ledger(account_id)
+    before = len(entries)
+    entries = [
+        e for e in entries
+        if str(e.get("display_name", "")).strip() not in remove
+    ]
+    removed = before - len(entries)
+    if removed:
+        _save(entries, account_id)
+    return {"removed": removed, "total": len(entries)}
+
+
 def stats(account_id: str | None = None) -> dict:
     """台账自愈报表：分布统计、连续成功 Top、low 待确认、近 7 天发送。"""
     entries = load_ledger(account_id)

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from core import accounts, scheduler
-from core.config import DEFAULT_ACCOUNT_ID, get_valid_state_path
+from core import accounts, ledger, scheduler
+from core.config import DEFAULT_ACCOUNT_ID, get_valid_state_path, load_config
 from core.runtime import load_runtime
 
 from .douyin import douyin
@@ -25,6 +25,8 @@ def _summary(a: dict) -> dict:
         "state_file_exists": get_valid_state_path(aid) is not None,
         "douyin_nickname": rt.get("douyin_nickname") or "",
         "display_name": rt.get("douyin_nickname") or a["name"],
+        "auto_run_enabled": bool(load_config(aid).get("auto_run_enabled", True)),
+        "selected_count": len(ledger.get_selected(aid)),
     }
 
 

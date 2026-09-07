@@ -88,7 +88,9 @@ def load_config(account_id: str | None = None) -> dict:
 
 def save_config(cfg: dict | None, account_id: str | None = None) -> dict:
     aid = account_id or DEFAULT_ACCOUNT_ID
-    merged = dict(DEFAULT_CONFIG)
+    # 合并式保存：先读已持久化的配置，再用传入字段覆盖，避免部分更新（如任务页
+    # 只保存时间/文案）把未传入的字段（如 friends / messages）重置为空。
+    merged = load_config(aid)
     if cfg:
         merged.update(cfg)
 

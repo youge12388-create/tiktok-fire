@@ -572,6 +572,7 @@ def run_send(dry_run: bool = False, only_names: list[str] | None = None, account
         "ok": [], "failed": [], "skipped": [], "uncertain": [],
         "logged_out": False, "rate_limited": False,
         "risk_detected": False, "screenshot": None,
+        "stopped": False,
         "account_id": aid,
     }
 
@@ -610,6 +611,10 @@ def run_send(dry_run: bool = False, only_names: list[str] | None = None, account
 
             logger.info("[%s] 待发送好友 %s 人，dry_run=%s", aid, len(targets), dry_run)
             for entry in targets:
+                if load_runtime(aid).get("stop_requested"):
+                    result["stopped"] = True
+                    logger.info("[%s] 收到手动停止指令，本轮中断", aid)
+                    break
                 msg = build_message(messages, last_sent_msg=str(entry.get("last_msg", "")))
                 if entry.get("has_conversation"):
                     _send_consumer(page, entry, msg, dry_run, result, aid)

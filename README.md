@@ -13,6 +13,8 @@
 4. 前端：`cd frontend && npm install && npm run dev`（默认代理 `/api` 到 `127.0.0.1:8000`）
 5. 浏览器打开 `http://127.0.0.1:5173`，用 `.env` 中的管理员账号登录
 
+> 🔐 **登录与安全**：后台登录账号密码来自 `.env` 的 `ADMIN_USERNAME` / `ADMIN_PASSWORD`。出于安全，**仓库与文档不保存任何真实密码**；生产密码只存在于服务器 `.env` 与本地/服务器私密记录（`.agent/credentials.local.md`，已被本仓库 `.gitignore` 忽略，绝不提交）。
+
 ### 测试
 ```bash
 .venv\Scripts\python -m pytest

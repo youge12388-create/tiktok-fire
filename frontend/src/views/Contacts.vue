@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Refresh, Search, UserFilled } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete, Refresh, Search, UserFilled } from '@element-plus/icons-vue'
 import { listAccounts } from '@/api/accounts'
 import { withAppBasePath } from '@/api/base'
-import { listContacts, syncContacts } from '@/api/contacts'
+import { deleteContacts, listContacts, setContactsSelection, syncContacts } from '@/api/contacts'
 import { getErrorMessage } from '@/api/errors'
-import { getTask, putTask } from '@/api/tasks'
 import type { Account, Contact } from '@/types'
 
 type CheckableContact = Contact & { checked: boolean }
@@ -53,10 +52,9 @@ async function loadContacts() {
   }
   loading.value = true
   try {
-    const [listResponse, taskResponse] = await Promise.all([listContacts(accountId.value), getTask(accountId.value)])
-    const selected = new Set(taskResponse.data.friends || [])
-    contacts.value = (listResponse.data.contacts || []).map((contact) => ({ ...contact, checked: selected.has(contact.name) }))
-    if (listResponse.data.contacts_error) ElMessage.warning(listResponse.data.contacts_error)
+    const { data } = await listContacts(accountId.value)
+    contacts.value = (data.contacts || []).map((contact) => ({ ...contact, checked: !!contact.selected }))
+    if (data.contacts_error) ElMessage.warning(data.contacts_error)
   } catch (error: unknown) {
     ElMessage.error(getErrorMessage(error, '联系人加载失败，请稍后重试'))
   } finally {
@@ -112,7 +110,8 @@ async function saveSelection() {
   if (!accountId.value) return
   selectionSaving.value = true
   try {
-    await putTask(accountId.value, { friends: contacts.value.filter((contact) => contact.checked).map((contact) => contact.name) })
+    const names = contacts.value.filter((contact) => contact.checked).map((contact) => contact.name)
+    await setContactsSelection(accountId.value, names)
   } catch (error: unknown) {
     ElMessage.error(getErrorMessage(error, '联系人选择保存失败'))
     await loadContacts()
@@ -129,6 +128,26 @@ async function selectAll() {
 async function clearAll() {
   contacts.value.forEach((contact) => (contact.checked = false))
   await saveSelection()
+}
+
+async function removeContact(contact: Contact) {
+  if (!accountId.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除联系人「${contact.name}」？删除后将不再参与自动续火花。`,
+      '删除联系人',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  try {
+    await deleteContacts(accountId.value, [contact.name])
+    ElMessage.success('联系人已删除')
+    await loadContacts()
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '联系人删除失败'))
+  }
 }
 
 watch(accountId, loadContacts)
@@ -162,6 +181,7 @@ onUnmounted(stopPolling)
         <el-table-column prop="name" label="联系人" min-width="180" />
         <el-table-column label="火花" width="120"><template #default="{ row }">{{ row.streak || '—' }}</template></el-table-column>
         <el-table-column label="任务状态" width="110"><template #default="{ row }"><el-tag v-if="row.checked" type="success" size="small">已加入</el-tag><span v-else class="muted-state">未选择</span></template></el-table-column>
+        <el-table-column label="操作" width="72" align="center"><template #default="{ row }"><el-button text type="danger" :icon="Delete" aria-label="删除联系人" :disabled="selectionSaving" @click="removeContact(row)" /></template></el-table-column>
       </el-table>
 
       <div v-else-if="!accountId" class="empty-panel"><el-icon><UserFilled /></el-icon><h3>请先选择账号</h3><p>选择一个已登录的账号后，可以同步联系人。</p><el-button @click="$router.push('/accounts')">去账号管理</el-button></div>

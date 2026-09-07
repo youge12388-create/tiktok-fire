@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict
 
 from services import account_service, contact_service
 from services.task_runtime import start_fetch_contacts
@@ -10,6 +11,16 @@ from services.task_runtime import start_fetch_contacts
 from .deps import require_admin
 
 router = APIRouter(prefix="/accounts/{account_id}/contacts", tags=["contacts"], dependencies=[Depends(require_admin)])
+
+
+class SelectionBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    names: list[str]
+
+
+class DeleteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    names: list[str]
 
 
 def _resolve(account_id: str) -> str:
@@ -22,6 +33,16 @@ def _resolve(account_id: str) -> str:
 @router.get("")
 def list_contacts(account_id: str):
     return contact_service.list_contacts(_resolve(account_id))
+
+
+@router.put("/selection")
+def set_selection(account_id: str, body: SelectionBody):
+    return contact_service.set_selection(_resolve(account_id), body.names)
+
+
+@router.post("/delete")
+def delete_selected(account_id: str, body: DeleteBody):
+    return contact_service.delete_contacts(_resolve(account_id), body.names)
 
 
 @router.post("/sync")

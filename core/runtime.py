@@ -22,7 +22,13 @@ _ring: deque[str] = deque(maxlen=600)
 
 
 def _default() -> dict:
-    return {"session_status": "unknown", "running": False, "last_run": None, "history": []}
+    return {
+        "session_status": "unknown",
+        "running": False,
+        "last_run": None,
+        "history": [],
+        "stop_requested": False,
+    }
 
 
 def load_runtime(account_id: str | None = None) -> dict:
@@ -49,6 +55,13 @@ def _save(rt: dict, account_id: str | None = None) -> None:
 def set_running(value: bool, account_id: str | None = None) -> None:
     rt = load_runtime(account_id)
     rt["running"] = bool(value)
+    _save(rt, account_id)
+
+
+def set_stop_requested(account_id: str | None = None, value: bool = True) -> None:
+    """请求中断当前运行中的任务：发送循环会在联系人之间检查该标记并提前退出。"""
+    rt = load_runtime(account_id)
+    rt["stop_requested"] = bool(value)
     _save(rt, account_id)
 
 

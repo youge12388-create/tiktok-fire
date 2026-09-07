@@ -5,6 +5,9 @@ import { listAccounts } from '@/api/accounts'
 import { listRuns } from '@/api/logs'
 import http from '@/api/http'
 import type { Account, RunRecord } from '@/types'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { getErrorMessage } from '@/api/errors'
+import { runTask, stopRun, toggleAutoRun } from '@/api/tasks'
 
 interface Summary {
   version?: string
@@ -20,6 +23,7 @@ const accounts = ref<Account[]>([])
 const runs = ref<RunRecord[]>([])
 const loading = ref(true)
 const hasError = ref(false)
+const busy = ref('')
 
 const accountNameMap = computed(() => new Map(accounts.value.map((account) => [account.id, account.display_name || account.name])))
 const attentionCount = computed(() => summary.value?.accounts?.expired ?? 0)
@@ -37,13 +41,68 @@ function statusLabel(status: string) {
   return '失败'
 }
 
-function accountStatus(account: Account) {
+function taskStatus(account: Account) {
   if (!account.enabled) return { label: '已停用', type: 'info' }
   if (account.running) return { label: '执行中', type: 'warning' }
   if (!account.state_file_exists || ['unknown', 'expired', 'failed', 'invalid'].includes(account.session_status || '')) {
     return { label: '需登录', type: 'danger' }
   }
-  return { label: '正常', type: 'success' }
+  if (!account.auto_run_enabled) return { label: '已暂停', type: 'info' }
+  return { label: '运行中', type: 'success' }
+}
+
+function canExecute(account: Account) {
+  return Boolean(account.enabled && account.state_file_exists && !account.running)
+}
+
+async function onToggleAutoRun(account: Account, val: string | number | boolean) {
+  try {
+    await toggleAutoRun(account.id, Boolean(val))
+    await load()
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '自动运行切换失败'))
+    void load()
+  }
+}
+
+async function runNow(account: Account) {
+  if (!canExecute(account)) {
+    ElMessage.warning('账号未登录或正在执行，无法立即执行')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将使用「${account.display_name || account.name}」发送真实消息。`,
+      '确认立即执行',
+      { type: 'warning', confirmButtonText: '确认执行', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  busy.value = account.id
+  try {
+    await runTask(account.id)
+    ElMessage.success('任务已开始，可在执行记录中查看')
+    await load()
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '任务启动失败'))
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function stopNow(account: Account) {
+  busy.value = account.id
+  try {
+    const { data } = await stopRun(account.id)
+    if (data.stopped) ElMessage.success('已发送停止指令，正在中断当前任务')
+    else ElMessage.info('当前没有正在执行的任务')
+    await load()
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '停止操作失败'))
+  } finally {
+    busy.value = ''
+  }
 }
 
 function fmtTime(value?: string | null) {
@@ -124,11 +183,27 @@ onMounted(load)
           <router-link to="/accounts" class="link-action">管理账号</router-link>
         </div>
         <el-skeleton v-if="loading" :rows="4" animated class="section-loading" />
-        <div v-else-if="accounts.length" class="account-list">
-          <div v-for="account in accounts.slice(0, 5)" :key="account.id" class="account-row">
-            <span class="account-icon"><el-icon><UserFilled /></el-icon></span>
-            <div><strong>{{ account.display_name || account.name }}</strong><small>{{ fmtTime(account.next_run) }}</small></div>
-            <el-tag :type="accountStatus(account).type" size="small">{{ accountStatus(account).label }}</el-tag>
+        <div v-else-if="accounts.length" class="task-cards">
+          <div v-for="account in accounts" :key="account.id" class="task-card">
+            <div class="task-card-top">
+              <span class="account-icon"><el-icon><UserFilled /></el-icon></span>
+              <div class="task-card-main">
+                <strong>{{ account.display_name || account.name }}</strong>
+                <small>下次任务：{{ fmtTime(account.next_run) }}</small>
+              </div>
+              <el-tag :type="taskStatus(account).type" size="small">{{ taskStatus(account).label }}</el-tag>
+            </div>
+            <div class="task-card-meta">
+              <span>已选 {{ account.selected_count ?? 0 }} 人</span>
+              <span v-if="account.next_harvest">周级采集：{{ fmtTime(account.next_harvest) }}</span>
+            </div>
+            <div class="task-card-actions">
+              <el-switch v-model="account.auto_run_enabled" inline-prompt active-text="运行" inactive-text="停止" :disabled="!account.enabled" @change="(val) => onToggleAutoRun(account, val)" />
+              <div class="task-card-btns">
+                <el-button size="small" :disabled="!canExecute(account)" :loading="busy === account.id" @click="runNow(account)">立即执行</el-button>
+                <el-button v-if="account.running" size="small" type="danger" plain @click="stopNow(account)">中断</el-button>
+              </div>
+            </div>
           </div>
         </div>
         <div v-else class="small-empty"><el-icon><WarningFilled /></el-icon><span>暂无账号</span></div>
@@ -180,14 +255,17 @@ onMounted(load)
 .metrics strong.danger { color: var(--color-danger); }
 .dashboard-grid { display: grid; grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.5fr); gap: 16px; }
 .section-loading { padding: 20px; }
-.account-list { padding: 6px 20px 12px; }
-.account-row { display: flex; align-items: center; gap: 10px; min-height: 54px; border-bottom: 1px solid var(--color-border); }
-.account-row:last-child { border-bottom: 0; }
+.task-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; padding: 12px 20px 20px; }
+.task-card { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface); }
+.task-card-top { display: flex; align-items: center; gap: 10px; }
 .account-icon { display: grid; width: 30px; height: 30px; flex: 0 0 30px; place-items: center; border-radius: 50%; color: var(--color-text-secondary); background: var(--color-surface-muted); }
-.account-row > div { min-width: 0; flex: 1; }
-.account-row strong, .account-row small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-row strong { font-size: 12px; }
-.account-row small { margin-top: 4px; color: var(--color-text-secondary); font-size: 10px; }
+.task-card-main { min-width: 0; flex: 1; }
+.task-card-main strong, .task-card-main small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-card-main strong { font-size: 13px; }
+.task-card-main small { margin-top: 4px; color: var(--color-text-secondary); font-size: 10px; }
+.task-card-meta { display: flex; gap: 16px; color: var(--color-text-secondary); font-size: 11px; }
+.task-card-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.task-card-btns { display: flex; gap: 6px; }
 .run-row { display: grid; min-height: 50px; grid-template-columns: minmax(110px, 1.2fr) minmax(100px, 1fr) 82px 105px; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--color-border); font-size: 12px; }
 .run-row:last-child { border-bottom: 0; }
 .run-table-header { min-height: 42px; color: var(--color-text-secondary); background: var(--color-surface-muted); font-weight: 600; }

@@ -17,6 +17,8 @@ export interface Account {
   next_harvest?: string | null
   contacts_fetching?: boolean
   harvesting?: boolean
+  auto_run_enabled?: boolean
+  selected_count?: number
 }
 
 export interface ScanStatus {
@@ -30,6 +32,9 @@ export interface Contact {
   name: string
   streak?: string
   avatar?: string
+  selected?: boolean
+  has_conversation?: boolean
+  channel?: string
 }
 
 export interface RunRecord {

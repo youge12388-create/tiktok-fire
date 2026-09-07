@@ -68,3 +68,8 @@ Thumbs.db
 .agent/
 .cursor/
 .gemini/
+
+# 本地开发/生成产物（不提交）
+.impeccable/
+.tmp/
+frontend/dist-deploy.zip
