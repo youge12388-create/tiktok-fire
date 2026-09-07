@@ -13,7 +13,7 @@ FROM python:3.11-slim
 
 ENV TZ=Asia/Shanghai \
     DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \\
+    PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
 
 RUN sed -i 's@http://deb.debian.org@https://mirrors.aliyun.com@g' /etc/apt/sources.list.d/debian.sources \

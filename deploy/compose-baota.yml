@@ -1,19 +1,17 @@
-# 宝塔「Docker → 容器编排」表单使用的部署 Compose。
-# 先将不含 .env 与 data 的源码解压至 /opt/douyin-cloud-streak，
-# 再把本文件内容粘贴到表单；表单内的 .env 内容由宝塔私有保存。
+# 宝塔「Docker → 容器编排」表单使用的生产 Compose。
+# 镜像由 GitHub Actions 推送到 GHCR；.env 内容仍由宝塔私有保存，
+# /opt/douyin-cloud-streak/data 保持为宿主机持久化数据目录。
 
 services:
   douyin-cloud-streak:
-    build:
-      context: /opt/douyin-cloud-streak
-      args:
-        VITE_BASE_PATH: ${PUBLIC_BASE_PATH:-/}
+    image: ${DOCKER_IMAGE:-ghcr.io/youge12388-create/tiktok-fire:latest}
     container_name: douyin-cloud-streak
     restart: always
     init: true
     stop_grace_period: 30s
     ports:
-      - "127.0.0.1:8011:8000"
+      # 8011 已被同机的既有服务占用；Nginx 的 /douyin-fire/ 子路径反代到 8012。
+      - "127.0.0.1:8012:8000"
     shm_size: 1gb
     env_file:
       - .env

@@ -26,7 +26,7 @@ cd frontend && npm run build   # 产出 dist 供 Docker 使用
 4. 云安全组/防火墙只需放行 80 与 443，**不要直接开放容器宿主机端口**，后台仅经 HTTPS 访问。
 
 若同一 HTTPS 站点已经承载其他应用，可按 `deploy/nginx-subpath-example.conf` 挂到 `/douyin-fire/`；此时在 `.env` 同步设置该 `PUBLIC_BASE_PATH`、独立 `SESSION_COOKIE_NAME` 和 `COOKIE_SECURE=true`，再重新构建容器。
-宝塔面板的“容器编排”可使用 `deploy/compose-baota.yml`，其源码和数据目录均固定隔离在 `/opt/douyin-cloud-streak`。
+宝塔面板生产环境可使用 `deploy/compose-baota.yml` 从 GitHub Container Registry 拉取镜像；数据目录固定在 `/opt/douyin-cloud-streak/data`。首次切换和日常发布步骤见 `deploy/ghcr-deployment.md`。
 
 ### Docker
 ```bash
