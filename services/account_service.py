@@ -23,6 +23,8 @@ def _summary(a: dict) -> dict:
         "contacts_fetching": aid in contacts_fetching,
         "harvesting": aid in harvesting,
         "state_file_exists": get_valid_state_path(aid) is not None,
+        "douyin_nickname": rt.get("douyin_nickname") or "",
+        "display_name": rt.get("douyin_nickname") or a["name"],
     }
 
 

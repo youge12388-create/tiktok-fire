@@ -149,7 +149,7 @@ onMounted(loadAccounts)
     </div>
 
     <section class="surface account-bar">
-      <div><label class="field-label" for="task-account">抖音账号</label><el-select id="task-account" v-model="accountId" placeholder="选择账号"><el-option v-for="account in accounts" :key="account.id" :label="account.name" :value="account.id" /></el-select></div>
+      <div><label class="field-label" for="task-account">抖音账号</label><el-select id="task-account" v-model="accountId" placeholder="选择账号"><el-option v-for="account in accounts" :key="account.id" :label="account.display_name || account.name" :value="account.id" /></el-select></div>
       <div v-if="currentAccount" class="account-state"><el-tag :type="accountStatus(currentAccount).type" size="small">{{ accountStatus(currentAccount).label }}</el-tag><span>{{ accountStatus(currentAccount).message }}</span></div>
     </section>
 

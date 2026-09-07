@@ -29,6 +29,7 @@ from playwright.sync_api import sync_playwright
 
 from .accounts import acquire_browser_slot, release_browser_slot
 from .config import DEFAULT_ACCOUNT_ID, ROOT_STATE_PATH, account_state_path
+from .runtime import update_runtime
 from .selectors import (
     LOGIN_TAB_TEXT,
     QR_CLICK_CANDIDATES,
@@ -40,6 +41,7 @@ from .selectors import (
 logger = logging.getLogger("douyin-cloud-streak")
 
 CHAT_URL = "https://www.douyin.com/chat?isPopup=1"
+PROFILE_URL = "https://www.douyin.com/user/self"
 
 # 扫码等待总时长：覆盖"掏手机 -> 打开抖音 -> 扫码 -> 确认"的完整动作
 SESSION_TIMEOUT = 300
@@ -48,6 +50,36 @@ QR_REFRESH_LIMIT = 5
 
 # 登录成功判定 Cookie：覆盖抖音各端变体（sid_guard/sid_tt/uid_tt 与 sessionid 同批下发）
 _LOGIN_COOKIE_NAMES = {"sessionid", "sessionid_ss", "sid_tt", "sid_guard", "uid_tt"}
+
+
+_PROFILE_NICKNAME_JS = """
+    () => {
+        const selectors = [
+            '[data-e2e="user-info"] h1', '[data-e2e="user-info"] [class*="nickname"]',
+            '[class*="userInfo"] h1', '[class*="user-info"] h1',
+            '[class*="profile"] h1', '[class*="nickname"]'
+        ];
+        for (const selector of selectors) {
+            const value = document.querySelector(selector)?.textContent?.replace(/\\s+/g, ' ').trim();
+            if (value && value.length <= 80) return value;
+        }
+        const title = (document.title || '').trim();
+        const match = title.match(/^(.+?)(?:的主页|\\s*-\\s*抖音)/);
+        return match?.[1]?.trim() || '';
+    }
+"""
+
+
+def _extract_profile_nickname(page) -> str:
+    """登录后读取本人主页昵称；页面结构变化时静默回退，不影响登录。"""
+    try:
+        page.goto(PROFILE_URL, timeout=25000, wait_until="domcontentloaded")
+        page.wait_for_timeout(1200)
+        nickname = str(page.evaluate(_PROFILE_NICKNAME_JS) or "").strip()
+        return nickname[:80]
+    except Exception as exc:
+        logger.info("读取抖音账号昵称失败: %s", str(exc)[:100])
+        return ""
 
 _slot_guard = threading.Lock()
 _slot_holders: set[str] = set()
@@ -338,8 +370,12 @@ def _session_worker(aid: str, stop_flag: threading.Event) -> None:
             cookies = context.cookies("https://www.douyin.com")
             if any(c.get("name") in _LOGIN_COOKIE_NAMES and c.get("value") for c in cookies):
                 _save_state(context, aid)
+                nickname = _extract_profile_nickname(page)
+                if nickname:
+                    update_runtime(aid, douyin_nickname=nickname)
                 _set(aid, status="success",
-                     message=f"登录成功！已保存该账号的登录态（{len(cookies)} 条 Cookie）")
+                     message=(f"登录成功！已保存该账号的登录态（{len(cookies)} 条 Cookie）"
+                              + (f"，账号：{nickname}" if nickname else "")))
                 logger.info("[%s] 网页扫码登录成功，state.json 已更新", aid)
                 return
 

@@ -315,13 +315,24 @@ _EXTRACT_JS = """
                 if (!asrc.includes('flame_icon')) avatar = asrc;
             }
 
+            // 只同步带火花的会话。普通私信、系统通知不应出现在续火名单中。
+            if (!streak) return;
             out.push({ name: finalName, streak: streak, avatar: avatar });
         });
 
-        // 触底检测：聊天列表容器滚动到底，则无需继续滚
+        // 虚拟列表的真正滚动容器通常是会话行的祖先，不能只依赖不稳定的 class 名。
         let atBottom = false;
         try {
-            const scroller = document.querySelector(
+            let scroller = null;
+            let parent = rows[0] && rows[0].parentElement;
+            while (parent && parent !== document.body) {
+                if (parent.scrollHeight > parent.clientHeight + 8) {
+                    scroller = parent;
+                    break;
+                }
+                parent = parent.parentElement;
+            }
+            if (!scroller) scroller = document.querySelector(
                 '[class*="conversationList"], [class*="chatList"], [class*="ContactList"], [class*="contactList"]'
             );
             const el = scroller && scroller.scrollHeight > scroller.clientHeight ? scroller : document.scrollingElement;
@@ -329,6 +340,29 @@ _EXTRACT_JS = """
         } catch (e) {}
 
         return { items: out, atBottom: atBottom };
+    }
+"""
+
+_SCROLL_CHAT_LIST_JS = """
+    () => {
+        const rows = document.querySelectorAll('[class*="conversationConversationItemwrapper"]');
+        let el = null;
+        let parent = rows[0] && rows[0].parentElement;
+        while (parent && parent !== document.body) {
+            if (parent.scrollHeight > parent.clientHeight + 8) {
+                el = parent;
+                break;
+            }
+            parent = parent.parentElement;
+        }
+        if (!el) el = document.querySelector(
+            '[class*="conversationList"], [class*="chatList"], [class*="ContactList"], [class*="contactList"]'
+        );
+        if (!el || el.scrollHeight <= el.clientHeight) el = document.scrollingElement;
+        if (!el) return false;
+        const before = el.scrollTop;
+        el.scrollTop = Math.min(el.scrollTop + Math.max(240, Math.floor(el.clientHeight * 0.7)), el.scrollHeight);
+        return el.scrollTop > before;
     }
 """
 
@@ -345,32 +379,36 @@ def _open_chat_page(page) -> bool:
     return False
 
 
-def _scroll_and_extract(page, collected: list[dict], max_rounds: int = 20) -> None:
+def _scroll_and_extract(page, collected: list[dict], max_rounds: int = 80) -> None:
     """滚动聊天列表并提取联系人，直到没有新数据或列表触底。
 
     列表为虚拟滚动，步长过大会跳过部分行导致火花遗漏，故小步快滚。
     每轮只等待 DOM 增量渲染，触底或连续两轮无新数据即提前结束。
     """
+    stable = 0
+    seen_names = {str(item.get("name", "")) for item in collected}
     for _ in range(max_rounds):
         res = page.evaluate(_EXTRACT_JS) or {}
         data = res.get("items") or []
-        new_items = [x for x in data if x not in collected]
+        new_items = [x for x in data if x.get("streak") and x.get("name") not in seen_names]
         if new_items:
             collected.extend(new_items)
+            seen_names.update(str(item["name"]) for item in new_items)
             stable = 0
         else:
-            stable = getattr(_scroll_and_extract, "_stable", 0) + 1
-            _scroll_and_extract._stable = stable
-            if stable >= 2 or res.get("atBottom"):
+            stable += 1
+            if stable >= 4 or res.get("atBottom"):
                 break
         if res.get("atBottom"):
             break
         try:
-            page.mouse.move(200, 350)
-            page.mouse.wheel(0, 450)
+            moved = page.evaluate(_SCROLL_CHAT_LIST_JS)
+            if not moved:
+                break
         except Exception:
-            pass
-        page.wait_for_timeout(300)
+            logger.info("聊天列表滚动失败，停止同步")
+            break
+        page.wait_for_timeout(500)
 
 
 def fetch_chat_contacts(account_id: str | None = None) -> dict:
@@ -401,7 +439,6 @@ def fetch_chat_contacts(account_id: str | None = None) -> dict:
                 except Exception:
                     logger.info("第 %s 次等待联系人列表超时", attempt + 1)
 
-                _scroll_and_extract._stable = 0
                 _scroll_and_extract(page, collected)
 
                 if collected:

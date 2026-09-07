@@ -54,3 +54,34 @@ class _NoQrPage:
 
 def test_missing_qrcode_keeps_full_page_screenshot_fallback():
     assert login_session._wait_and_extract_qrcode(_NoQrPage(), timeout_ms=0) == "data:image/png;base64,cGFnZS1wbmc="
+
+
+class _ProfilePage:
+    def __init__(self, nickname="抖音昵称"):
+        self.nickname = nickname
+        self.url = ""
+
+    def goto(self, url, **_kwargs):
+        self.url = url
+
+    def wait_for_timeout(self, _timeout):
+        pass
+
+    def evaluate(self, script):
+        assert script == login_session._PROFILE_NICKNAME_JS
+        return self.nickname
+
+
+def test_profile_nickname_is_read_from_self_profile():
+    page = _ProfilePage()
+
+    assert login_session._extract_profile_nickname(page) == "抖音昵称"
+    assert page.url == login_session.PROFILE_URL
+
+
+def test_profile_nickname_failure_does_not_break_login():
+    class _BrokenPage:
+        def goto(self, *_args, **_kwargs):
+            raise RuntimeError("page changed")
+
+    assert login_session._extract_profile_nickname(_BrokenPage()) == ""

@@ -3,6 +3,8 @@ export interface Account {
   name: string
   enabled: boolean
   device?: string
+  douyin_nickname?: string
+  display_name?: string
   dir?: string
   is_default?: boolean
   session_status?: string

@@ -121,6 +121,15 @@ function accountStatus(account: Account) {
   return { type: 'success', label: '正常' }
 }
 
+function accountDisplayName(account: Account) {
+  return account.display_name || account.douyin_nickname || account.name
+}
+
+function accountDetail(account: Account) {
+  if (account.douyin_nickname && account.douyin_nickname !== account.name) return `备注：${account.name}`
+  return account.device || account.id
+}
+
 function scanLabel(status: string) {
   const labels: Record<string, string> = {
     queuing: '正在启动',
@@ -143,7 +152,7 @@ function fmtTime(value?: string | null) {
 
 async function openScan(account: Account) {
   scanAccountId.value = account.id
-  scanAccountName.value = account.name
+  scanAccountName.value = accountDisplayName(account)
   scan.status = 'queuing'
   scan.message = '正在准备登录二维码'
   scan.qrcode = ''
@@ -243,7 +252,7 @@ onUnmounted(stopPolling)
       <div v-else-if="accounts.length" class="account-list">
         <div v-for="account in accounts" :key="account.id" class="account-row">
           <span class="account-avatar"><el-icon><UserFilled /></el-icon></span>
-          <div class="account-name"><strong>{{ account.name }}</strong><small>{{ account.device || account.id }}</small></div>
+          <div class="account-name"><strong>{{ accountDisplayName(account) }}</strong><small>{{ accountDetail(account) }}</small></div>
           <div class="account-time"><span>下次任务</span><strong>{{ fmtTime(account.next_run) }}</strong></div>
           <el-tag :type="accountStatus(account).type" size="small">{{ accountStatus(account).label }}</el-tag>
           <el-switch v-model="account.enabled" aria-label="启用账号" @change="toggle(account)" />

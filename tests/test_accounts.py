@@ -1,4 +1,5 @@
-from core import accounts
+from core import accounts, runtime
+from services import account_service
 from services.state import acquire_lock, lock_for
 
 
@@ -14,6 +15,19 @@ def test_create_update_remove_archives():
 
 def test_default_cannot_be_removed():
     assert accounts.remove_account("default") is False
+
+
+def test_account_summary_exposes_logged_in_douyin_nickname():
+    acc = accounts.create_account(name="运营备注", device="")
+    aid = acc["id"]
+    try:
+        runtime.update_runtime(aid, douyin_nickname="抖音昵称")
+        summary = next(item for item in account_service.list_accounts()["accounts"] if item["id"] == aid)
+        assert summary["name"] == "运营备注"
+        assert summary["douyin_nickname"] == "抖音昵称"
+        assert summary["display_name"] == "抖音昵称"
+    finally:
+        accounts.remove_account(aid)
 
 
 def test_same_account_single_lock():

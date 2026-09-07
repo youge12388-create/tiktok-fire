@@ -21,7 +21,7 @@ const runs = ref<RunRecord[]>([])
 const loading = ref(true)
 const hasError = ref(false)
 
-const accountNameMap = computed(() => new Map(accounts.value.map((account) => [account.id, account.name])))
+const accountNameMap = computed(() => new Map(accounts.value.map((account) => [account.id, account.display_name || account.name])))
 const attentionCount = computed(() => summary.value?.accounts?.expired ?? 0)
 const nextRun = computed(() => accounts.value.map((account) => account.next_run).filter(Boolean).sort()[0] || '')
 
@@ -127,7 +127,7 @@ onMounted(load)
         <div v-else-if="accounts.length" class="account-list">
           <div v-for="account in accounts.slice(0, 5)" :key="account.id" class="account-row">
             <span class="account-icon"><el-icon><UserFilled /></el-icon></span>
-            <div><strong>{{ account.name }}</strong><small>{{ fmtTime(account.next_run) }}</small></div>
+            <div><strong>{{ account.display_name || account.name }}</strong><small>{{ fmtTime(account.next_run) }}</small></div>
             <el-tag :type="accountStatus(account).type" size="small">{{ accountStatus(account).label }}</el-tag>
           </div>
         </div>

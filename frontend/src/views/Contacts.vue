@@ -145,7 +145,7 @@ onUnmounted(stopPolling)
 
     <section class="surface">
       <div class="toolbar">
-        <div class="account-field"><label class="field-label" for="contact-account">抖音账号</label><el-select id="contact-account" v-model="accountId" placeholder="选择账号"><el-option v-for="account in accounts" :key="account.id" :label="account.name" :value="account.id" /></el-select></div>
+        <div class="account-field"><label class="field-label" for="contact-account">抖音账号</label><el-select id="contact-account" v-model="accountId" placeholder="选择账号"><el-option v-for="account in accounts" :key="account.id" :label="account.display_name || account.name" :value="account.id" /></el-select></div>
         <el-tag v-if="currentAccount" :type="accountStatus(currentAccount).type" size="small">{{ accountStatus(currentAccount).label }}</el-tag>
         <div class="search-field"><label class="field-label" for="contact-search">搜索</label><el-input id="contact-search" v-model="keyword" clearable placeholder="输入联系人名称" :prefix-icon="Search" /></div>
       </div>

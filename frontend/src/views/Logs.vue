@@ -16,7 +16,7 @@ const errorMessage = ref('')
 const filters = reactive({ account_id: '', status: '', date: '', limit: 20, offset: 0 })
 
 const page = computed(() => Math.floor(filters.offset / filters.limit) + 1)
-const accountNameMap = computed(() => new Map(accounts.value.map((account) => [account.id, account.name])))
+const accountNameMap = computed(() => new Map(accounts.value.map((account) => [account.id, account.display_name || account.name])))
 const hasFilters = computed(() => Boolean(filters.account_id || filters.status || filters.date))
 
 function statusType(status: string) {
@@ -143,7 +143,7 @@ onMounted(() => {
     <section class="surface">
       <div class="toolbar filter-bar">
         <el-select v-model="filters.account_id" clearable placeholder="全部账号" aria-label="筛选账号">
-          <el-option v-for="account in accounts" :key="account.id" :label="account.name" :value="account.id" />
+          <el-option v-for="account in accounts" :key="account.id" :label="account.display_name || account.name" :value="account.id" />
         </el-select>
         <el-select v-model="filters.status" clearable placeholder="全部结果" aria-label="筛选结果">
           <el-option label="成功" value="success" />
