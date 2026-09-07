@@ -18,20 +18,27 @@ const loading = ref(false)
 const syncing = ref(false)
 const selectionSaving = ref(false)
 let timer: number | undefined
+let contactsRequestId = 0
 
 const currentAccount = computed(() => accounts.value.find((account) => account.id === accountId.value))
-const canSync = computed(() => Boolean(currentAccount.value?.enabled && currentAccount.value.state_file_exists))
+const canSync = computed(() => Boolean(
+  currentAccount.value?.enabled
+    && currentAccount.value.state_file_exists
+    && !['expired', 'failed', 'invalid'].includes(currentAccount.value.session_status || '')
+))
 const filtered = computed(() => {
   const search = keyword.value.trim().toLowerCase()
   if (!search) return contacts.value
   return contacts.value.filter((contact) => (contact.name || '').toLowerCase().includes(search))
 })
-const selectedCount = computed(() => contacts.value.filter((contact) => contact.checked).length)
+const selectedCount = computed(() => contacts.value.filter((contact) => contact.checked && !contact.identity_ambiguous).length)
 
 function accountStatus(account?: Account) {
   if (!account) return { label: '未选择', type: 'info' }
   if (!account.enabled) return { label: '已停用', type: 'info' }
-  if (!account.state_file_exists || ['unknown', 'expired', 'failed', 'invalid'].includes(account.session_status || '')) return { label: '需登录', type: 'danger' }
+  if (!account.state_file_exists) return { label: '需登录', type: 'danger' }
+  if (['expired', 'failed', 'invalid'].includes(account.session_status || '')) return { label: '需重新登录', type: 'danger' }
+  if (account.session_status === 'unknown') return { label: '待检测', type: 'warning' }
   return { label: '正常', type: 'success' }
 }
 
@@ -45,20 +52,27 @@ async function loadAccounts() {
   }
 }
 
-async function loadContacts() {
-  if (!accountId.value) {
+async function loadContacts(requestedAccountId = accountId.value) {
+  const requestId = ++contactsRequestId
+  if (!requestedAccountId) {
     contacts.value = []
+    loading.value = false
     return
   }
   loading.value = true
   try {
-    const { data } = await listContacts(accountId.value)
-    contacts.value = (data.contacts || []).map((contact) => ({ ...contact, checked: !!contact.selected }))
+    const { data } = await listContacts(requestedAccountId)
+    if (requestId !== contactsRequestId || accountId.value !== requestedAccountId) return
+    contacts.value = (data.contacts || []).map((contact) => ({
+      ...contact,
+      checked: !!contact.selected && !contact.identity_ambiguous
+    }))
     if (data.contacts_error) ElMessage.warning(data.contacts_error)
   } catch (error: unknown) {
+    if (requestId !== contactsRequestId || accountId.value !== requestedAccountId) return
     ElMessage.error(getErrorMessage(error, '联系人加载失败，请稍后重试'))
   } finally {
-    loading.value = false
+    if (requestId === contactsRequestId) loading.value = false
   }
 }
 
@@ -67,31 +81,42 @@ async function doSync() {
     ElMessage.warning('请先完成账号登录')
     return
   }
+  const syncAccountId = accountId.value
   syncing.value = true
   try {
-    await syncContacts(accountId.value)
+    await syncContacts(syncAccountId)
+    if (accountId.value !== syncAccountId) return
     ElMessage.success('正在同步联系人')
-    startPolling()
+    startPolling(syncAccountId)
   } catch (error: unknown) {
+    if (accountId.value !== syncAccountId) return
     ElMessage.error(getErrorMessage(error, '联系人同步失败'))
     syncing.value = false
   }
 }
 
-function startPolling() {
+function startPolling(pollingAccountId: string) {
   stopPolling()
   let attempts = 0
   timer = window.setInterval(async () => {
+    if (accountId.value !== pollingAccountId) {
+      stopPolling()
+      syncing.value = false
+      return
+    }
     attempts += 1
     try {
-      const { data } = await listContacts(accountId.value)
+      const { data } = await listContacts(pollingAccountId)
+      if (accountId.value !== pollingAccountId) return
       if (!data.fetching || attempts >= 30) {
         stopPolling()
         syncing.value = false
-        await loadContacts()
+        await loadContacts(pollingAccountId)
+        if (accountId.value !== pollingAccountId) return
         ElMessage.success(data.fetching ? '已显示当前同步结果' : '联系人同步完成')
       }
     } catch {
+      if (accountId.value !== pollingAccountId) return
       stopPolling()
       syncing.value = false
       ElMessage.error('同步状态查询失败，请稍后重试')
@@ -110,7 +135,9 @@ async function saveSelection() {
   if (!accountId.value) return
   selectionSaving.value = true
   try {
-    const names = contacts.value.filter((contact) => contact.checked).map((contact) => contact.name)
+    const names = contacts.value
+      .filter((contact) => contact.checked && !contact.identity_ambiguous)
+      .map((contact) => contact.name)
     await setContactsSelection(accountId.value, names)
   } catch (error: unknown) {
     ElMessage.error(getErrorMessage(error, '联系人选择保存失败'))
@@ -121,7 +148,9 @@ async function saveSelection() {
 }
 
 async function selectAll() {
-  contacts.value.forEach((contact) => (contact.checked = true))
+  contacts.value.forEach((contact) => {
+    if (!contact.identity_ambiguous) contact.checked = true
+  })
   await saveSelection()
 }
 
@@ -150,7 +179,11 @@ async function removeContact(contact: Contact) {
   }
 }
 
-watch(accountId, loadContacts)
+watch(accountId, (nextAccountId) => {
+  stopPolling()
+  syncing.value = false
+  void loadContacts(nextAccountId)
+})
 onMounted(loadAccounts)
 onUnmounted(stopPolling)
 </script>
@@ -176,11 +209,11 @@ onUnmounted(stopPolling)
 
       <el-skeleton v-if="loading" :rows="6" animated class="loading-block" />
       <el-table v-else-if="filtered.length" :data="filtered">
-        <el-table-column width="54"><template #default="{ row }"><el-checkbox v-model="row.checked" :disabled="selectionSaving" aria-label="选择联系人" @change="saveSelection" /></template></el-table-column>
+        <el-table-column width="54"><template #default="{ row }"><el-checkbox v-model="row.checked" :disabled="selectionSaving || row.identity_ambiguous" :title="row.identity_ambiguous ? '同名联系人需先确认唯一会话' : undefined" aria-label="选择联系人" @change="saveSelection" /></template></el-table-column>
         <el-table-column width="60"><template #default="{ row }"><el-avatar :size="36" :src="row.avatar ? withAppBasePath(row.avatar) : undefined"><el-icon><UserFilled /></el-icon></el-avatar></template></el-table-column>
         <el-table-column prop="name" label="联系人" min-width="180" />
         <el-table-column label="火花" width="120"><template #default="{ row }">{{ row.streak || '—' }}</template></el-table-column>
-        <el-table-column label="任务状态" width="110"><template #default="{ row }"><el-tag v-if="row.checked" type="success" size="small">已加入</el-tag><span v-else class="muted-state">未选择</span></template></el-table-column>
+        <el-table-column label="任务状态" width="130"><template #default="{ row }"><el-tag v-if="row.identity_ambiguous" type="warning" size="small">同名待确认</el-tag><el-tag v-else-if="row.checked" type="success" size="small">已加入</el-tag><span v-else class="muted-state">未选择</span></template></el-table-column>
         <el-table-column label="操作" width="72" align="center"><template #default="{ row }"><el-button text type="danger" :icon="Delete" aria-label="删除联系人" :disabled="selectionSaving" @click="removeContact(row)" /></template></el-table-column>
       </el-table>
 

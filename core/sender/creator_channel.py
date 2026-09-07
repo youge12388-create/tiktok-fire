@@ -14,7 +14,7 @@ import logging
 import time
 
 from ..browser import open_browser
-from ..config import DEFAULT_ACCOUNT_ID, account_state_path, load_config
+from ..config import DEFAULT_ACCOUNT_ID, get_valid_state_path, load_config
 from ..guard import detect_rate_limit
 
 logger = logging.getLogger("douyin-cloud-streak")
@@ -68,7 +68,10 @@ def send_first_message(
         return False, "台账缺少昵称/显示名，无法定位"
     cfg = load_config(aid)
     max_scrolls = int(cfg.get("creator_max_scrolls", 80) or 80)
-    state_file = str(account_state_path(aid))
+    valid_state = get_valid_state_path(aid)
+    if valid_state is None:
+        return False, "该账号尚未上传有效登录态 state.json"
+    state_file = str(valid_state)
 
     try:
         # 复用调用方的 playwright 实例
@@ -96,7 +99,7 @@ def send_first_message(
                     pass
         else:
             ctx_kwargs = {"viewport": {"width": 1366, "height": 900}, "locale": "zh-CN"}
-            with open_browser(state_path=account_state_path(aid), **ctx_kwargs) as (p, browser, context, page):
+            with open_browser(state_path=valid_state, **ctx_kwargs) as (p, browser, context, page):
                 return _do_send(page, context, nickname, msg_text, dry_run, max_scrolls)
     except Exception as e:
         logger.error("通道 B 发送异常: %s", e)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from app_config import DATA_DIR
@@ -46,9 +47,10 @@ CREATE INDEX IF NOT EXISTS idx_item_account ON run_items(account_id);
 
 def get_connection() -> sqlite3.Connection:
     """每次调用返回一条新连接，避免跨线程共享 sqlite 连接的问题。"""
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -58,3 +60,14 @@ def init_db() -> None:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_connection() as conn:
         conn.executescript(SCHEMA_SQL)
+        # 进程在任务中途重启时，避免历史记录永久停留在 running。
+        conn.execute(
+            """
+            UPDATE run_records
+            SET status = 'uncertain',
+                finished_at = COALESCE(finished_at, ?),
+                error = COALESCE(error, '服务重启时任务未完成')
+            WHERE status = 'running'
+            """,
+            (datetime.now().astimezone().isoformat(timespec="seconds"),),
+        )

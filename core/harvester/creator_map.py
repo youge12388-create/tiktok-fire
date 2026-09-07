@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..browser import open_browser
-from ..config import DEFAULT_ACCOUNT_ID, account_state_path, load_config
+from ..config import DEFAULT_ACCOUNT_ID, account_state_path, get_valid_state_path, load_config
 
 logger = logging.getLogger("douyin-cloud-streak")
 
@@ -123,7 +123,11 @@ def collect_short_id_map(
 
     try:
         ctx_kwargs = {"viewport": {"width": 1366, "height": 900}, "locale": "zh-CN"}
-        with open_browser(state_path or account_state_path(aid), **ctx_kwargs) as (p, browser, context, page):
+        valid_state = Path(state_path) if state_path else get_valid_state_path(aid)
+        if valid_state is None:
+            result["error"] = "该账号尚未上传有效登录态 state.json"
+            return result
+        with open_browser(state_path=valid_state, **ctx_kwargs) as (p, browser, context, page):
             page.on("response", _on_response_factory(mapping, urls, api_path))
 
             page.goto(CREATOR_CHAT_URL, wait_until="domcontentloaded", timeout=90000)

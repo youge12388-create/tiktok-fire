@@ -13,6 +13,7 @@ const messagesText = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const running = ref(false)
+let taskRequestId = 0
 const form = reactive({
   schedule_time: '21:00',
   jitter_minutes: 30,
@@ -24,13 +25,20 @@ const form = reactive({
 
 const currentAccount = computed(() => accounts.value.find((account) => account.id === accountId.value))
 const messageCount = computed(() => messagesText.value.split('\n').map((message) => message.trim()).filter(Boolean).length)
-const canExecute = computed(() => Boolean(currentAccount.value?.enabled && currentAccount.value.state_file_exists && !currentAccount.value.running))
+const canExecute = computed(() => Boolean(
+  currentAccount.value?.enabled
+    && currentAccount.value.state_file_exists
+    && currentAccount.value.session_status === 'ok'
+    && !currentAccount.value.running
+))
 
 function accountStatus(account?: Account) {
   if (!account) return { type: 'info', label: '未选择', message: '请选择一个账号' }
   if (!account.enabled) return { type: 'info', label: '已停用', message: '请先启用账号' }
   if (account.running) return { type: 'warning', label: '执行中', message: '当前账号正在执行任务' }
-  if (!account.state_file_exists || ['unknown', 'expired', 'failed', 'invalid'].includes(account.session_status || '')) return { type: 'danger', label: '需登录', message: '请先完成扫码登录' }
+  if (!account.state_file_exists) return { type: 'danger', label: '需登录', message: '请先完成扫码登录' }
+  if (['expired', 'failed', 'invalid'].includes(account.session_status || '')) return { type: 'danger', label: '需重新登录', message: '登录态已失效，请重新扫码登录' }
+  if (account.session_status === 'unknown') return { type: 'warning', label: '待检测', message: '建议先检测登录状态，确认登录态可用' }
   return { type: 'success', label: '正常', message: '账号可以执行任务' }
 }
 
@@ -44,11 +52,16 @@ async function loadAccounts() {
   }
 }
 
-async function loadTask() {
-  if (!accountId.value) return
+async function loadTask(requestedAccountId = accountId.value) {
+  const requestId = ++taskRequestId
+  if (!requestedAccountId) {
+    loading.value = false
+    return
+  }
   loading.value = true
   try {
-    const { data } = await getTask(accountId.value)
+    const { data } = await getTask(requestedAccountId)
+    if (requestId !== taskRequestId || accountId.value !== requestedAccountId) return
     Object.assign(form, {
       schedule_time: data.schedule_time,
       jitter_minutes: data.jitter_minutes,
@@ -59,9 +72,10 @@ async function loadTask() {
     })
     messagesText.value = (data.messages || []).join('\n')
   } catch (error: unknown) {
+    if (requestId !== taskRequestId || accountId.value !== requestedAccountId) return
     ElMessage.error(getErrorMessage(error, '任务配置加载失败'))
   } finally {
-    loading.value = false
+    if (requestId === taskRequestId) loading.value = false
   }
 }
 
@@ -137,7 +151,7 @@ async function doRun() {
   }
 }
 
-watch(accountId, loadTask)
+watch(accountId, (nextAccountId) => void loadTask(nextAccountId))
 onMounted(loadAccounts)
 </script>
 

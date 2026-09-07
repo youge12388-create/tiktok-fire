@@ -32,7 +32,7 @@ from app_config import (
     security_problems,
 )
 from core import accounts, scheduler
-from core.runtime import setup_logging
+from core.runtime import recover_stale_running, setup_logging
 from db import init_db
 from services.task_runtime import _scheduled_run, start_harvest_creator
 
@@ -105,7 +105,9 @@ def _acquire_instance_lock() -> None:
         if old_pid:
             if old_host and old_host != cur_host:
                 logger.info("发现其他容器/主机（%s）的残留锁（PID %s），可安全接管", old_host, old_pid)
-            elif _pid_alive(old_pid) and old_start and _proc_identity(old_pid)[1] == old_start:
+            elif _pid_alive(old_pid) and (
+                not old_start or not cur_start or _proc_identity(old_pid)[1] == old_start
+            ):
                 logger.error("检测到已有实例在运行（PID %s），拒绝启动", old_pid)
                 raise SystemExit(f"已有实例在运行（PID {old_pid}），请先停止旧实例")
             else:
@@ -121,7 +123,12 @@ async def lifespan(_app: FastAPI):
     _acquire_instance_lock()
     init_db()
     try:
-        accounts.list_accounts()
+        for account in accounts.list_accounts():
+            try:
+                if recover_stale_running(account["id"]):
+                    logger.warning("[%s] 已清理上次进程遗留的运行状态", account["id"])
+            except Exception:  # noqa: BLE001
+                logger.exception("[%s] 清理遗留运行状态失败", account.get("id", "unknown"))
         scheduler.configure(
             _scheduled_run,
             harvest_func=lambda account_id: start_harvest_creator(account_id),

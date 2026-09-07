@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from services import run_service
@@ -13,7 +13,13 @@ router = APIRouter(prefix="/runs", tags=["runs"], dependencies=[Depends(require_
 
 
 @router.get("")
-def list_runs(account_id: str | None = None, status: str | None = None, date: str | None = None, limit: int = 200, offset: int = 0):
+def list_runs(
+    account_id: str | None = None,
+    status: str | None = None,
+    date: str | None = None,
+    limit: int = Query(200, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
     return run_service.list_runs(account_id, status, date, limit, offset)
 
 

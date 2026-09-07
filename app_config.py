@@ -79,7 +79,7 @@ def security_problems() -> list[str]:
         problems.append("ADMIN_PASSWORD 未配置，请在 .env 中设置管理员密码")
     elif ADMIN_PASSWORD.lower() in WEAK_PASSWORDS:
         problems.append("ADMIN_PASSWORD 过弱，不能使用 admin/123456/password 等默认密码")
-    if not SESSION_SECRET or len(SESSION_SECRET) < 16:
+    if not SESSION_SECRET or len(SESSION_SECRET) < 32:
         problems.append("SESSION_SECRET 缺失或过短，请设置至少 32 位随机字符串")
     if not _is_safe_url_path(PUBLIC_BASE_PATH, allow_empty=True):
         problems.append("PUBLIC_BASE_PATH 必须是以 / 开头的路径前缀，例如 /douyin-fire")

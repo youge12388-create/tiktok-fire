@@ -3,11 +3,15 @@ from fastapi.testclient import TestClient
 from starlette.middleware.sessions import SessionMiddleware
 
 from api.deps import CSRFMiddleware
+from api import auth as auth_api
 
 
 def test_health_is_public(client):
     r = client.get("/api/v1/system/health")
     assert r.status_code == 200
+    assert r.json()["ready"] is True
+    assert r.json()["checks"] == {"database": True, "scheduler": True}
+    assert client.get("/api/v1/system/health/live").json()["ok"] is True
 
 
 def test_unauthenticated_protected(client):
@@ -19,6 +23,27 @@ def test_unauthenticated_protected(client):
 def test_login_wrong_password_rejected(client):
     r = client.post("/api/v1/auth/login", json={"username": "admin", "password": "wrong"})
     assert r.status_code == 401
+
+
+def test_login_unicode_input_returns_auth_error_not_server_error(client):
+    r = client.post("/api/v1/auth/login", json={"username": "游sir", "password": "错误密码"})
+    assert r.status_code == 401
+
+
+def test_login_rate_limit_keeps_block_for_configured_duration(client, monkeypatch):
+    auth_api._login_failures.clear()
+    auth_api._login_blocked_until.clear()
+    now = 1000.0
+    monkeypatch.setattr(auth_api.time, "monotonic", lambda: now)
+    for _ in range(auth_api._LOGIN_MAX_FAILURES):
+        assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "wrong"}).status_code == 401
+    assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "wrong"}).status_code == 429
+    monkeypatch.setattr(auth_api.time, "monotonic", lambda: now + auth_api._LOGIN_WINDOW_SECONDS + 1)
+    assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "wrong"}).status_code == 429
+    monkeypatch.setattr(auth_api.time, "monotonic", lambda: now + auth_api._LOGIN_BLOCK_SECONDS + 1)
+    assert client.post("/api/v1/auth/login", json={"username": "admin", "password": "wrong"}).status_code == 401
+    auth_api._login_failures.clear()
+    auth_api._login_blocked_until.clear()
 
 
 def test_login_logout_me_cycle(client):

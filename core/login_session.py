@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -82,35 +83,39 @@ def _extract_profile_nickname(page) -> str:
         return ""
 
 _slot_guard = threading.Lock()
-_slot_holders: set[str] = set()
+_slot_holders: set[tuple[str, str]] = set()
+_ACTIVE_SESSION_STATUSES = {"queuing", "starting", "waiting_scan"}
 
 
-def _acquire_slot_tracked(aid: str) -> None:
+def _acquire_slot_tracked(aid: str, session_id: str) -> None:
     """获取全局并发名额并登记归属，保证释放幂等（线程卡死被强制接管时不重复释放）。"""
     acquire_browser_slot()
     with _slot_guard:
-        _slot_holders.add(aid)
+        _slot_holders.add((aid, session_id))
 
 
-def _release_slot_once(aid: str) -> None:
+def _release_slot_once(aid: str, session_id: str) -> None:
     with _slot_guard:
-        if aid not in _slot_holders:
+        key = (aid, session_id)
+        if key not in _slot_holders:
             return
-        _slot_holders.discard(aid)
+        _slot_holders.discard(key)
     release_browser_slot()
 
 
-def _hard_expire(aid: str) -> None:
+def _hard_expire(aid: str, session_id: str) -> None:
     """硬超时保护：工作线程卡死（如浏览器进程被杀后同步调用挂起）时强制终态。"""
-    flag = _stop_flags.get(aid)
-    if flag:
-        flag.set()
     with _guard:
         st = _sessions.get(aid)
-        if st and st["status"] in ("queuing", "starting", "waiting_scan"):
+        if not st or st.get("session_id") != session_id:
+            return
+        flag = _stop_flags.get(aid)
+        if flag:
+            flag.set()
+        if st["status"] in ("queuing", "starting", "waiting_scan"):
             st.update(status="expired", message="扫码会话超时，请重新发起扫码", qrcode="")
             logger.warning("[%s] 扫码会话触发硬超时保护（工作线程疑似卡死）", aid)
-    _release_slot_once(aid)
+    _release_slot_once(aid, session_id)
 
 _QR_SELECTORS = QR_IMAGE_SELECTORS
 
@@ -141,17 +146,19 @@ def start(account_id: str) -> dict:
         if old and old["status"] in ("queuing", "starting", "waiting_scan"):
             return {"ok": True, "resumed": True, **_public(old)}
         flag = threading.Event()
+        session_id = uuid.uuid4().hex
         _stop_flags[account_id] = flag
         st = _new_state(
             account_id,
+            session_id=session_id,
             status="queuing",
             message="正在排队获取浏览器名额…",
         )
         _sessions[account_id] = st
 
-    t = threading.Thread(target=_session_worker, args=(account_id, flag), daemon=True)
+    t = threading.Thread(target=_session_worker, args=(account_id, flag, session_id), daemon=True)
     t.start()
-    watchdog = threading.Timer(SESSION_TIMEOUT + 90, lambda: _hard_expire(account_id))
+    watchdog = threading.Timer(SESSION_TIMEOUT + 90, lambda: _hard_expire(account_id, session_id))
     watchdog.daemon = True
     watchdog.start()
     logger.info("[%s] 网页扫码会话已启动", account_id)
@@ -175,7 +182,9 @@ def cancel(account_id: str) -> dict:
         st = _sessions.get(account_id)
         if not st or st["status"] in ("success", "failed", "expired", "cancelled"):
             _sessions.pop(account_id, None)
+            _stop_flags.pop(account_id, None)
             return {"ok": True, "message": "无进行中的扫码会话"}
+        session_id = st.get("session_id", "")
         flag = _stop_flags.get(account_id)
     if flag:
         flag.set()
@@ -184,12 +193,14 @@ def cancel(account_id: str) -> dict:
         time.sleep(0.1)
         with _guard:
             cur = _sessions.get(account_id)
-            if not cur or cur["status"] not in ("queuing", "starting", "waiting_scan"):
+            if not cur or cur.get("session_id") != session_id:
+                break
+            if cur["status"] not in ("queuing", "starting", "waiting_scan"):
                 break
     else:
         with _guard:
             cur = _sessions.get(account_id)
-            if cur and cur["status"] in ("waiting_scan",):
+            if cur and cur.get("session_id") == session_id and cur["status"] in ("waiting_scan",):
                 cur["status"] = "cancelled"
                 cur["message"] = "已取消"
     logger.info("[%s] 扫码会话已取消", account_id)
@@ -205,18 +216,67 @@ def _public(st: dict) -> dict:
     }
 
 
-def _set(aid: str, **fields) -> None:
+def _set(aid: str, session_id: str | None = None, **fields) -> None:
     with _guard:
         st = _sessions.get(aid)
-        if st is None:
+        if st is None or (session_id is not None and st.get("session_id") != session_id):
             return
         st.update(fields)
         st["last_active"] = time.time()
 
 
-def _is_stopped(aid: str) -> bool:
-    flag = _stop_flags.get(aid)
-    return bool(flag and flag.is_set())
+def _is_stopped(aid: str, session_id: str | None = None) -> bool:
+    with _guard:
+        st = _sessions.get(aid)
+        if session_id is not None and (st is None or st.get("session_id") != session_id):
+            return True
+        flag = _stop_flags.get(aid)
+        return bool(flag and flag.is_set())
+
+
+def _session_is_current(aid: str, session_id: str) -> bool:
+    """判断会话仍是当前且未被取消；调用方不应据此跨锁执行副作用。"""
+    with _guard:
+        st = _sessions.get(aid)
+        if not st or st.get("session_id") != session_id or st.get("status") not in _ACTIVE_SESSION_STATUSES:
+            return False
+        flag = _stop_flags.get(aid)
+        return not (flag and flag.is_set())
+
+
+def _save_state_if_current(context, aid: str, session_id: str) -> bool:
+    """仅允许当前会话导出登录态，校验与写盘在同一把会话锁内完成。"""
+    with _guard:
+        st = _sessions.get(aid)
+        flag = _stop_flags.get(aid)
+        if (
+            not st
+            or st.get("session_id") != session_id
+            or st.get("status") not in _ACTIVE_SESSION_STATUSES
+            or (flag and flag.is_set())
+        ):
+            return False
+        _save_state(context, aid)
+        return True
+
+
+def _update_nickname_if_current(aid: str, session_id: str, nickname: str) -> bool:
+    """旧扫码线程退出或被替换后，不得覆盖新会话写入的昵称。"""
+    with _guard:
+        st = _sessions.get(aid)
+        flag = _stop_flags.get(aid)
+        if (
+            not st
+            or st.get("session_id") != session_id
+            or st.get("status") not in _ACTIVE_SESSION_STATUSES
+            or (flag and flag.is_set())
+        ):
+            return False
+        fields = {"session_status": "ok"}
+        if nickname:
+            fields["douyin_nickname"] = nickname
+        update_runtime(aid, **fields)
+        return bool(nickname)
 
 
 def _launch_browser(pw):
@@ -264,22 +324,22 @@ def _launch_browser(pw):
     return pw.chromium.launch(headless=True, **common), None
 
 
-def _session_worker(aid: str, stop_flag: threading.Event) -> None:
+def _session_worker(aid: str, stop_flag: threading.Event, session_id: str) -> None:
     pw = None
     browser = None
     xvfb_proc = None
     try:
         queue_started = time.perf_counter()
-        _acquire_slot_tracked(aid)
+        _acquire_slot_tracked(aid, session_id)
         logger.info(
             "[%s] 扫码浏览器名额已获取，排队耗时 %.2fs",
             aid,
             time.perf_counter() - queue_started,
         )
-        if _is_stopped(aid):
+        if _is_stopped(aid, session_id):
             raise CancelledError()
 
-        _set(aid, status="starting", message="正在打开抖音登录页…")
+        _set(aid, session_id, status="starting", message="正在打开抖音登录页…")
         browser_started = time.perf_counter()
         pw = sync_playwright().start()
         browser, xvfb_proc = _launch_browser(pw)
@@ -357,25 +417,27 @@ def _session_worker(aid: str, stop_flag: threading.Event) -> None:
         )
         if not qr_data:
             raise RuntimeError("未能从页面提取到登录二维码，请稍后重试")
-        _set(aid, status="waiting_scan", message="请使用抖音 App 扫码登录", qrcode=qr_data)
+        _set(aid, session_id, status="waiting_scan", message="请使用抖音 App 扫码登录", qrcode=qr_data)
 
         deadline = time.time() + SESSION_TIMEOUT
         refresh_count = 0
         face_clicked = False
         polls = 0
         while time.time() < deadline:
-            if _is_stopped(aid):
+            if _is_stopped(aid, session_id):
                 raise CancelledError()
 
             cookies = context.cookies("https://www.douyin.com")
             if any(c.get("name") in _LOGIN_COOKIE_NAMES and c.get("value") for c in cookies):
-                _save_state(context, aid)
+                if not _save_state_if_current(context, aid, session_id):
+                    raise CancelledError()
                 nickname = _extract_profile_nickname(page)
-                if nickname:
-                    update_runtime(aid, douyin_nickname=nickname)
-                _set(aid, status="success",
+                nickname_saved = _update_nickname_if_current(aid, session_id, nickname)
+                if not _session_is_current(aid, session_id):
+                    raise CancelledError()
+                _set(aid, session_id, status="success",
                      message=(f"登录成功！已保存该账号的登录态（{len(cookies)} 条 Cookie）"
-                              + (f"，账号：{nickname}" if nickname else "")))
+                              + (f"，账号：{nickname}" if nickname_saved else "")))
                 logger.info("[%s] 网页扫码登录成功，state.json 已更新", aid)
                 return
 
@@ -393,7 +455,7 @@ def _session_worker(aid: str, stop_flag: threading.Event) -> None:
                 page.wait_for_timeout(2500)
                 qr_data = _wait_and_extract_qrcode(page, timeout_ms=30000, account_id=aid)
                 if qr_data:
-                    _set(aid, qrcode=qr_data,
+                    _set(aid, session_id, qrcode=qr_data,
                          message=f"二维码已自动刷新（第 {refresh_count} 次），请重新扫码")
 
             # 复刻 2.1 GetCooker 的二次刷脸风控处理：确认登录后可能要求刷脸，
@@ -402,24 +464,24 @@ def _session_worker(aid: str, stop_flag: threading.Event) -> None:
                 if _js_click_first(page, ["手机刷脸验证", "刷脸验证"]):
                     face_clicked = True
                     logger.info("[%s] 触发二次安全验证，已点击刷脸按钮", aid)
-                    _set(aid, message="触发安全验证：请用抖音 App 扫描下方新二维码并按提示完成验证")
+                    _set(aid, session_id, message="触发安全验证：请用抖音 App 扫描下方新二维码并按提示完成验证")
                     page.wait_for_timeout(3000)
             else:
                 _js_click_first(page, ["已完成", "验证成功"])
                 qr_face = _extract_face_qr(page)
                 if qr_face:
-                    _set(aid, qrcode=qr_face)
+                    _set(aid, session_id, qrcode=qr_face)
 
             page.wait_for_timeout(1500)
 
-        _set(aid, status="expired", message="扫码超时，请重新发起扫码", qrcode="")
+        _set(aid, session_id, status="expired", message="扫码超时，请重新发起扫码", qrcode="")
         logger.info("[%s] 扫码会话超时结束", aid)
 
     except CancelledError:
-        _set(aid, status="cancelled", message="已取消", qrcode="")
+        _set(aid, session_id, status="cancelled", message="已取消", qrcode="")
     except Exception as e:
         msg = str(e)[:200]
-        _set(aid, status="failed", message="扫码会话异常", error=msg, qrcode="")
+        _set(aid, session_id, status="failed", message="扫码会话异常", error=msg, qrcode="")
         logger.warning("[%s] 扫码会话异常：%s", aid, msg)
     finally:
         if browser:
@@ -437,10 +499,22 @@ def _session_worker(aid: str, stop_flag: threading.Event) -> None:
                 xvfb_proc.terminate()
             except Exception:
                 pass
-        _release_slot_once(aid)
-        _stop_flags.pop(aid, None)
-        # 终态保留 120 秒供前端读取，之后由 GC 或下次 start 清理
-        threading.Timer(120, lambda: _sessions.pop(aid, None)).start()
+        _release_slot_once(aid, session_id)
+        with _guard:
+            current = _sessions.get(aid)
+            if current and current.get("session_id") == session_id and _stop_flags.get(aid) is stop_flag:
+                _stop_flags.pop(aid, None)
+        # 终态保留 120 秒供前端读取，之后仅清理本次会话，不能误删新会话。
+        cleanup = threading.Timer(120, lambda: _cleanup_session(aid, session_id))
+        cleanup.daemon = True
+        cleanup.start()
+
+
+def _cleanup_session(aid: str, session_id: str) -> None:
+    with _guard:
+        current = _sessions.get(aid)
+        if current and current.get("session_id") == session_id:
+            _sessions.pop(aid, None)
 
 
 class CancelledError(Exception):
@@ -634,10 +708,17 @@ def _save_state(context, account_id: str) -> None:
     path: Path = account_state_path(account_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     import json
-    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    payload = json.dumps(raw, ensure_ascii=False)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, path)
     if account_id == DEFAULT_ACCOUNT_ID:
         try:
-            ROOT_STATE_PATH.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+            root_tmp = ROOT_STATE_PATH.with_name(
+                f"{ROOT_STATE_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            root_tmp.write_text(payload, encoding="utf-8")
+            os.replace(root_tmp, ROOT_STATE_PATH)
         except Exception:
             pass
 

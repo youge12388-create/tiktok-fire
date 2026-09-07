@@ -60,6 +60,20 @@ def test_delete_contacts_removes_from_config(fresh_account):
     assert load_config(fresh_account)["friends"] == ["乙"]
 
 
+def test_duplicate_display_names_are_marked_ambiguous_and_not_pending(fresh_account):
+    ledger.merge_consumer_contacts(
+        [{"name": "同名", "streak": "5"}, {"name": "同名", "streak": "6"}],
+        fresh_account,
+    )
+    contact = ledger.load_ledger(fresh_account)[0]
+    assert contact["identity_ambiguous"] is True
+
+    contact_service.set_selection(fresh_account, ["同名"])
+    from core import automation
+
+    assert automation.compute_pending(account_id=fresh_account) == []
+
+
 def test_api_selection_delete_and_autorun(client):
     client.post("/api/v1/auth/login", json={"username": "admin", "password": PWD})
 

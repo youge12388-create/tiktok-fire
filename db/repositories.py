@@ -45,6 +45,38 @@ def create_run(
         return int(cur.lastrowid)
 
 
+def update_run(
+    run_id: int,
+    *,
+    status: str,
+    finished_at: str | None,
+    success_count: int,
+    failed_count: int,
+    risk_detected: bool,
+    error: str | None,
+) -> bool:
+    """更新已创建的运行记录，返回记录是否存在。"""
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            UPDATE run_records
+            SET finished_at = ?, status = ?, success_count = ?, failed_count = ?,
+                risk_detected = ?, error = ?
+            WHERE id = ?
+            """,
+            (
+                finished_at,
+                status,
+                success_count,
+                failed_count,
+                1 if risk_detected else 0,
+                error,
+                run_id,
+            ),
+        )
+        return cur.rowcount > 0
+
+
 def add_run_item(
     run_id: int,
     account_id: str,

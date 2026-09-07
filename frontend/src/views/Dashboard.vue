@@ -31,28 +31,34 @@ const nextRun = computed(() => accounts.value.map((account) => account.next_run)
 
 function statusType(status: string) {
   if (status === 'success') return 'success'
-  if (status === 'uncertain') return 'warning'
+  if (status === 'uncertain' || status === 'running') return 'warning'
   return 'danger'
 }
 
 function statusLabel(status: string) {
   if (status === 'success') return '成功'
   if (status === 'uncertain') return '待确认'
+  if (status === 'running') return '执行中'
   return '失败'
 }
 
 function taskStatus(account: Account) {
   if (!account.enabled) return { label: '已停用', type: 'info' }
   if (account.running) return { label: '执行中', type: 'warning' }
-  if (!account.state_file_exists || ['unknown', 'expired', 'failed', 'invalid'].includes(account.session_status || '')) {
-    return { label: '需登录', type: 'danger' }
-  }
+  if (!account.state_file_exists) return { label: '需登录', type: 'danger' }
+  if (['expired', 'failed', 'invalid'].includes(account.session_status || '')) return { label: '需重新登录', type: 'danger' }
+  if (account.session_status === 'unknown') return { label: '待检测', type: 'warning' }
   if (!account.auto_run_enabled) return { label: '已暂停', type: 'info' }
   return { label: '运行中', type: 'success' }
 }
 
 function canExecute(account: Account) {
-  return Boolean(account.enabled && account.state_file_exists && !account.running)
+  return Boolean(
+    account.enabled
+      && account.state_file_exists
+      && account.session_status === 'ok'
+      && !account.running
+  )
 }
 
 async function onToggleAutoRun(account: Account, val: string | number | boolean) {

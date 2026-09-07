@@ -1,4 +1,5 @@
 from core import login_session
+import threading
 
 
 class _QrLocator:
@@ -85,3 +86,69 @@ def test_profile_nickname_failure_does_not_break_login():
             raise RuntimeError("page changed")
 
     assert login_session._extract_profile_nickname(_BrokenPage()) == ""
+
+
+def test_old_cleanup_cannot_remove_replacement_session(monkeypatch):
+    replacement = {
+        "session_id": "new-session",
+        "status": "waiting_scan",
+        "message": "等待扫码",
+        "qrcode": "",
+        "error": "",
+    }
+    monkeypatch.setitem(login_session._sessions, "acc_1", replacement)
+
+    login_session._cleanup_session("acc_1", "old-session")
+
+    assert login_session._sessions["acc_1"] is replacement
+
+
+def test_old_watchdog_cannot_expire_replacement_session(monkeypatch):
+    replacement = {
+        "session_id": "new-session",
+        "status": "waiting_scan",
+        "message": "等待扫码",
+        "qrcode": "",
+        "error": "",
+    }
+    flag = threading.Event()
+    monkeypatch.setitem(login_session._sessions, "acc_1", replacement)
+    monkeypatch.setitem(login_session._stop_flags, "acc_1", flag)
+    released: list[tuple[str, str]] = []
+    monkeypatch.setattr(login_session, "_release_slot_once", lambda aid, sid: released.append((aid, sid)))
+
+    login_session._hard_expire("acc_1", "old-session")
+
+    assert replacement["status"] == "waiting_scan"
+    assert not flag.is_set()
+    assert released == []
+
+
+def test_old_session_cannot_save_state_after_replacement(monkeypatch):
+    replacement = {"session_id": "new-session", "status": "waiting_scan"}
+    monkeypatch.setitem(login_session._sessions, "acc_1", replacement)
+    saved: list[bool] = []
+    monkeypatch.setattr(login_session, "_save_state", lambda *_args: saved.append(True))
+
+    assert login_session._save_state_if_current(object(), "acc_1", "old-session") is False
+    assert saved == []
+
+
+def test_expired_session_cannot_update_nickname(monkeypatch):
+    flag = threading.Event()
+    flag.set()
+    monkeypatch.setitem(
+        login_session._sessions,
+        "acc_1",
+        {"session_id": "old-session", "status": "expired"},
+    )
+    monkeypatch.setitem(login_session._stop_flags, "acc_1", flag)
+    updated: list[str] = []
+    monkeypatch.setattr(
+        login_session,
+        "update_runtime",
+        lambda _aid, **fields: updated.append(fields["douyin_nickname"]),
+    )
+
+    assert login_session._update_nickname_if_current("acc_1", "old-session", "旧昵称") is False
+    assert updated == []

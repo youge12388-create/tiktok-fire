@@ -52,29 +52,54 @@ fi
 echo "==> 6. 设置时区为 Asia/Shanghai..."
 timedatectl set-timezone Asia/Shanghai 2>/dev/null || true
 
-echo "==> 7. 配置访问令牌 (Token)..."
+echo "==> 7. 配置管理员登录与会话密钥..."
+generate_secret() {
+  # 十六进制格式可直接安全写入 dotenv 文件，且有 64 位随机字符。
+  head -c 48 /dev/urandom | sha256sum | cut -d ' ' -f 1
+}
+
+GENERATED_ADMIN_PASSWORD=""
 if [ ! -f "$SERVICE_DIR/.env" ]; then
-  TOKEN="$(head -c 24 /dev/urandom | sha256sum | head -c 24)"
-  cat > "$SERVICE_DIR/.env" <<EOF
-AUTH_TOKEN=$TOKEN
+  GENERATED_ADMIN_PASSWORD="$(generate_secret)"
+  SESSION_SECRET_VALUE="$(generate_secret)"
+  (
+    umask 077
+    cat > "$SERVICE_DIR/.env" <<EOF
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=$GENERATED_ADMIN_PASSWORD
+SESSION_SECRET=$SESSION_SECRET_VALUE
 PORT=8000
-HOST=0.0.0.0
+HOST=127.0.0.1
 TZ=Asia/Shanghai
+COOKIE_SECURE=true
 EOF
+  )
 fi
 
-TOKEN_VALUE="$(grep '^AUTH_TOKEN=' "$SERVICE_DIR/.env" | cut -d= -f2- | tr -d '\r\n')"
-if [ -z "$TOKEN_VALUE" ]; then
-  TOKEN_VALUE="$(head -c 24 /dev/urandom | sha256sum | head -c 24)"
-  sed -i "s/^AUTH_TOKEN=.*/AUTH_TOKEN=$TOKEN_VALUE/" "$SERVICE_DIR/.env"
+chmod 600 "$SERVICE_DIR/.env"
+
+if ! grep -q '^ADMIN_USERNAME=.' "$SERVICE_DIR/.env"; then
+  printf '\nADMIN_USERNAME=admin\n' >> "$SERVICE_DIR/.env"
+fi
+if ! grep -q '^ADMIN_PASSWORD=.' "$SERVICE_DIR/.env"; then
+  GENERATED_ADMIN_PASSWORD="$(generate_secret)"
+  printf '\nADMIN_PASSWORD=%s\n' "$GENERATED_ADMIN_PASSWORD" >> "$SERVICE_DIR/.env"
+fi
+if ! grep -q '^SESSION_SECRET=.' "$SERVICE_DIR/.env"; then
+  printf '\nSESSION_SECRET=%s\n' "$(generate_secret)" >> "$SERVICE_DIR/.env"
+fi
+
+if ! "$VENV/bin/python" -c 'from app_config import security_problems; import sys; problems = security_problems(); print("\\n".join(problems)); sys.exit(bool(problems))'; then
+  echo "[错误] .env 未通过安全校验；请修正上方问题后重新运行部署脚本。"
+  exit 1
 fi
 
 echo "==> 8. 注册并启动 systemd 开机自启服务..."
 systemctl stop douyin-spark 2>/dev/null || true
 systemctl disable douyin-spark 2>/dev/null || true
 systemctl stop douyin-cloud-streak 2>/dev/null || true
-pkill -9 -f "python.*app.py" 2>/dev/null || true
-fuser -k -9 8000/tcp 2>/dev/null || true
+# 不再用 pkill/fuser 强制杀掉整台机器上的 Python 或 8000 端口进程，
+# 避免误伤同机其他服务；若端口仍被占用，让 systemd 启动失败并保留现场供排查。
 sed "s|__DIR__|$SERVICE_DIR|g; s|__VENV__|$VENV|g" "$UNIT_SRC" > "$UNIT_DST"
 systemctl daemon-reload
 systemctl enable --now douyin-cloud-streak
@@ -90,13 +115,18 @@ echo ""
 echo "======================================================"
 echo "  🎉 恭喜！抖音云端续火花助手服务部署完成并已启动！"
 echo "======================================================"
-echo "Web 管理后台地址: http://$IP:8000"
-echo "后台访问安全令牌: $TOKEN_VALUE"
+echo "应用已绑定本机: http://127.0.0.1:8000"
+echo "管理员账号:       $(grep '^ADMIN_USERNAME=' "$SERVICE_DIR/.env" | cut -d= -f2-)"
+if [ -n "$GENERATED_ADMIN_PASSWORD" ]; then
+  echo "管理员密码（仅本次显示，请立即妥善保存）: $GENERATED_ADMIN_PASSWORD"
+else
+  echo "管理员密码:       已保留现有 .env 中的 ADMIN_PASSWORD"
+fi
 echo "配置文件位置:     $SERVICE_DIR/.env"
 echo "======================================================"
 echo "【下一步操作】"
-echo "1. 请在服务器安全组/防火墙中放行 8000 端口 (TCP)；"
+echo "1. 请配置 Nginx HTTPS 反向代理到 127.0.0.1:8000，仅开放 80/443；不要放行 8000；"
 echo "2. 在电脑上运行「1.本地提取通行证.bat」扫码获取登录态；"
-echo "3. 运行「4.同步登录态到服务器.bat」上传通行证（或直接在网页后台上传）；"
-echo "4. 浏览器访问 http://$IP:8000 输入令牌，勾选好友开启每日自动续火花！"
+echo "3. 运行「4.同步登录态到服务器.bat」上传登录态（或直接在 HTTPS 后台扫码）；"
+echo "4. 浏览器访问你的 HTTPS 域名，使用管理员账号密码登录并勾选好友开启每日自动续火花！"
 echo "======================================================"

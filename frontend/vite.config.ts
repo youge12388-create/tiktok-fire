@@ -31,7 +31,6 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          'element-plus': ['element-plus'],
           'framework': ['vue', 'vue-router', 'pinia', 'axios']
         }
       }

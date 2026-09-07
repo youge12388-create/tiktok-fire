@@ -22,11 +22,6 @@ from .config import account_state_path, get_valid_state_path
 
 logger = logging.getLogger("douyin-cloud-streak")
 
-_CHROME_UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
-
 _COMMON_ARGS = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -49,6 +44,15 @@ def _apply_stealth(page) -> None:
             pass
 
 
+def _user_agent(browser) -> str:
+    """让伪装 UA 的 Chrome 主版本与实际 Playwright 内核保持一致。"""
+    major = str(getattr(browser, "version", "")).split(".", 1)[0] or "124"
+    return (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+
+
 @contextmanager
 def open_browser(state_path: Path | str | None = None, headless: bool = True, **ctx_kwargs):
     """启动 Chromium 并返回 (playwright, browser, context, page)。
@@ -67,13 +71,14 @@ def open_browser(state_path: Path | str | None = None, headless: bool = True, **
     state_file = str(valid_state) if valid_state and valid_state.exists() else None
 
     acquire_browser_slot()
-    p = sync_playwright().start()
+    p = None
     browser = None
     try:
+        p = sync_playwright().start()
         browser = p.chromium.launch(headless=headless, args=_COMMON_ARGS)
         defaults = {
             "viewport": {"width": 1366, "height": 768},
-            "user_agent": _CHROME_UA,
+            "user_agent": _user_agent(browser),
             "locale": "zh-CN",
             "timezone_id": "Asia/Shanghai",
             "ignore_https_errors": True,
@@ -93,8 +98,9 @@ def open_browser(state_path: Path | str | None = None, headless: bool = True, **
                 browser.close()
             except Exception:
                 pass
-        try:
-            p.stop()
-        except Exception:
-            pass
+        if p:
+            try:
+                p.stop()
+            except Exception:
+                pass
         release_browser_slot()

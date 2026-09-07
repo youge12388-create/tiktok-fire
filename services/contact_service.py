@@ -24,6 +24,7 @@ def list_contacts(account_id: str) -> dict:
             "selected": bool(e.get("selected")),
             "has_conversation": bool(e.get("has_conversation")),
             "channel": e.get("channel") or "none",
+            "identity_ambiguous": bool(e.get("identity_ambiguous")),
         })
     selected_count = sum(1 for c in contacts if c["selected"])
     return {

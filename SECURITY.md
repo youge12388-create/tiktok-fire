@@ -10,7 +10,7 @@
 
 1. **登录通行证保密**：`data/state.json` 包含您抖音账号的完整登录 Session 与 Cookie，等同于账号密码，**严禁将其发送给他人或提交到任何公开代码仓库**！
 2. **仓库零泄漏机制**：本项目已在 `.gitignore` 中默认排除了所有凭证与私有数据文件，正常情况下 `git commit` 不会包含私密数据。
-3. **后台访问安全**：在公网云服务器上部署时，请务必在 `.env` 中设置高强度的 `AUTH_TOKEN` 访问令牌，避免未授权人员访问您的管理控制台。
+3. **后台访问安全**：在 `.env` 中设置高强度的 `ADMIN_PASSWORD`（管理员密码）和至少 32 位随机 `SESSION_SECRET`；生产环境通过 Nginx HTTPS 访问并设置 `COOKIE_SECURE=true`。应用端口只应绑定本机，不能直接暴露公网。
 
 ## 🐛 漏洞反馈 (Reporting Security Issues)
 

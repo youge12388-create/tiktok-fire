@@ -16,7 +16,7 @@ from datetime import datetime
 
 from .browser import open_browser
 from . import ledger
-from .config import DEFAULT_ACCOUNT_ID, DATA_DIR, account_state_path, load_config
+from .config import DEFAULT_ACCOUNT_ID, DATA_DIR, get_valid_state_path, load_config
 from .guard import detect_rate_limit
 from .msg_builder import build_message
 from .runtime import load_runtime, update_runtime
@@ -415,8 +415,8 @@ def fetch_chat_contacts(account_id: str | None = None) -> dict:
     """从抖音私信页左侧聊天列表读取联系人（含火花天数），供网页端勾选。"""
     aid = account_id or DEFAULT_ACCOUNT_ID
     result = {"at": _now(), "names": [], "error": None}
-    state = account_state_path(aid)
-    if not state.exists():
+    state = get_valid_state_path(aid)
+    if state is None:
         result["error"] = "该账号尚未上传登录态 state.json"
         return result
 
@@ -478,6 +478,8 @@ def compute_pending(cfg: dict | None = None, account_id: str | None = None) -> l
     allow_first = bool(cfg.get("allow_first_message"))
     pending: list[dict] = []
     for e in entries:
+        if e.get("identity_ambiguous"):
+            continue
         if e.get("has_conversation"):
             pending.append({**e, "send_channel": "consumer"})
         elif allow_first and creator_sent_today < daily_limit:
@@ -576,8 +578,8 @@ def run_send(dry_run: bool = False, only_names: list[str] | None = None, account
         "account_id": aid,
     }
 
-    state = account_state_path(aid)
-    if not state.exists():
+    state = get_valid_state_path(aid)
+    if state is None:
         result["failed"].append({"name": "_system", "reason": "该账号尚未上传登录态 state.json"})
         return result
 
@@ -615,6 +617,13 @@ def run_send(dry_run: bool = False, only_names: list[str] | None = None, account
                     result["stopped"] = True
                     logger.info("[%s] 收到手动停止指令，本轮中断", aid)
                     break
+                if entry.get("identity_ambiguous"):
+                    result["skipped"].append({
+                        "name": entry.get("display_name", ""),
+                        "reason": "联系人名称重复，无法安全确认唯一会话",
+                    })
+                    logger.warning("[%s] 跳过同名联系人 %s，避免误发", aid, entry.get("display_name", ""))
+                    continue
                 msg = build_message(messages, last_sent_msg=str(entry.get("last_msg", "")))
                 if entry.get("has_conversation"):
                     _send_consumer(page, entry, msg, dry_run, result, aid)

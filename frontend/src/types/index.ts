@@ -35,6 +35,7 @@ export interface Contact {
   selected?: boolean
   has_conversation?: boolean
   channel?: string
+  identity_ambiguous?: boolean
 }
 
 export interface RunRecord {

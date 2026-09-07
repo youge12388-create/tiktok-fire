@@ -6,7 +6,7 @@ import logging
 import threading
 from datetime import datetime
 
-from core import scheduler
+from core import accounts, scheduler
 from core.runtime import load_runtime, set_running, update_runtime
 
 from . import run_service
@@ -15,33 +15,138 @@ from .douyin import douyin
 from .state import acquire_lock, contacts_fetching, harvesting, lock_for
 
 logger = logging.getLogger("douyin-cloud-streak")
+_harvest_guard = threading.Lock()
+
+
+def _ensure_account_enabled(account_id: str) -> None:
+    account = accounts.get_account(account_id)
+    if account is None:
+        raise RuntimeError("账号不存在，无法启动任务")
+    if not bool(account.get("enabled", True)):
+        raise RuntimeError("账号已停用，请先启用后再执行任务")
 
 
 def start_run(account_id: str, dry: bool = False, only_names: list[str] | None = None) -> bool:
     """启动一次发送任务（dry=True 为干跑）。返回是否成功启动。"""
+    _ensure_account_enabled(account_id)
     if not acquire_lock(account_id):
         raise RuntimeError("该账号已有任务在运行，请稍后再试")
-    threading.Thread(target=_run_worker, args=(account_id, dry, only_names), daemon=True).start()
-    return True
-
-
-def _run_worker(account_id: str, dry: bool, only_names: list[str] | None) -> None:
     try:
-        update_runtime(account_id, stop_requested=False)
-        set_running(True, account_id)
+        # 删除账号会检查同一把运行锁；拿锁后再次检查，避免检查与启动之间被删除。
+        _ensure_account_enabled(account_id)
+    except Exception:
+        lock_for(account_id).release()
+        raise
+    task_type = "dry_run" if dry else "spark"
+    run_id: int | None = None
+    try:
+        # 在释放请求可见的账号锁之前先建立 running 记录，避免任务已开始但历史页无记录。
+        run_id = run_service.start_run(account_id, task_type=task_type)
+        update_runtime(account_id, running=True, stop_requested=False)
+        threading.Thread(
+            target=_run_worker,
+            args=(account_id, dry, only_names, run_id),
+            daemon=True,
+        ).start()
+        return True
+    except Exception as exc:
+        if run_id is not None:
+            failure = _failure_result(account_id, dry, f"任务启动异常: {exc}")
+            try:
+                run_service.record_run(
+                    failure,
+                    account_id,
+                    task_type=task_type,
+                    run_id=run_id,
+                )
+            except Exception as persist_exc:  # noqa: BLE001
+                logger.exception("[%s] 任务启动失败结果落库失败", account_id)
+                _finish_persistence_failure(account_id, run_id, failure, persist_exc)
+            try:
+                update_runtime(account_id, running=False, stop_requested=False)
+            except Exception:  # noqa: BLE001
+                logger.exception("[%s] 任务启动失败后的运行状态清理失败", account_id)
+        lock_for(account_id).release()
+        raise
+
+
+def _failure_result(account_id: str, dry: bool, reason: str) -> dict:
+    return {
+        "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "dry_run": bool(dry),
+        "ok": [],
+        "failed": [{"name": "_system", "reason": reason}],
+        "skipped": [],
+        "uncertain": [],
+        "logged_out": False,
+        "rate_limited": False,
+        "risk_detected": False,
+        "screenshot": None,
+        "stopped": False,
+        "account_id": account_id,
+    }
+
+
+def _finish_persistence_failure(
+    account_id: str,
+    run_id: int | None,
+    result: dict,
+    exc: Exception,
+) -> None:
+    """结果落库失败时结束预创建记录，避免遗留 running。"""
+    if run_id is None:
+        return
+    try:
+        marked = run_service.mark_run_uncertain(
+            run_id,
+            result,
+            reason=f"运行结果落库失败，结果状态未知: {str(exc)[:200]}",
+        )
+        if not marked:
+            logger.error("[%s] 运行结果落库失败且预创建记录不存在（run_id=%s）", account_id, run_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("[%s] 无法结束异常运行记录（run_id=%s）", account_id, run_id)
+
+
+def _run_worker(
+    account_id: str,
+    dry: bool,
+    only_names: list[str] | None,
+    run_id: int | None = None,
+) -> None:
+    result: dict | None = None
+    try:
         try:
             result = douyin.run_spark(account_id, dry_run=dry, only_names=only_names)
-            run_service.record_run(result, account_id, task_type="dry_run" if dry else "spark")
-            if not dry and result.get("failed") and not result.get("logged_out"):
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[%s] 发送任务异常: %s", account_id, exc)
+            result = _failure_result(account_id, dry, f"后台任务异常: {exc}")
+        if not isinstance(result, dict):
+            logger.error("[%s] 自动化返回了非字典结果：%r", account_id, result)
+            result = _failure_result(account_id, dry, "后台任务返回结果格式异常")
+
+        persisted = True
+        try:
+            run_service.record_run(result, account_id, task_type="dry_run" if dry else "spark", run_id=run_id)
+        except Exception as exc:  # noqa: BLE001
+            persisted = False
+            logger.exception("[%s] 运行结果落库失败（run_id=%s）", account_id, run_id)
+            _finish_persistence_failure(account_id, run_id, result, exc)
+
+        try:
+            # 结果落库失败时无法确认本轮实际发送结果，禁止自动补发，避免重复触达。
+            if not dry and persisted and _retry_allowed(result):
                 _schedule_retry(account_id, result)
             elif not dry:
                 scheduler.cancel_retry(account_id)
-        finally:
+        except Exception:  # noqa: BLE001
+            logger.exception("[%s] 自动补发调度处理失败", account_id)
+    finally:
+        try:
             set_running(False, account_id)
             update_runtime(account_id, stop_requested=False)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("[%s] 发送任务异常: %s", account_id, exc)
-    finally:
+        except Exception:  # noqa: BLE001
+            logger.exception("[%s] 清理运行状态失败", account_id)
         lock_for(account_id).release()
 
 
@@ -55,9 +160,23 @@ def _schedule_retry(account_id: str, result: dict) -> None:
         return
     rt = load_runtime(account_id)
     today = datetime.now().date().isoformat()
-    if rt.get("retry_date") != today:
-        update_runtime(account_id, retry_date=today)
+    if rt.get("retry_date") == today:
+        logger.info("[%s] 今日已安排过自动补发，不再重复安排", account_id)
+        return
+    update_runtime(account_id, retry_date=today)
     scheduler.schedule_retry(lambda: _scheduled_run(account_id, failed_names), account_id=account_id)
+
+
+def _retry_allowed(result: dict) -> bool:
+    """仅确定性的普通失败允许自动补发；安全或结果不确定时必须人工处理。"""
+    unsafe = (
+        result.get("risk_detected")
+        or result.get("rate_limited")
+        or result.get("logged_out")
+        or result.get("stopped")
+        or result.get("uncertain")
+    )
+    return bool(result.get("failed")) and not bool(unsafe)
 
 
 def _scheduled_run(account_id: str, only_names: list[str] | None = None) -> None:
@@ -65,14 +184,24 @@ def _scheduled_run(account_id: str, only_names: list[str] | None = None) -> None
     try:
         start_run(account_id, dry=False, only_names=only_names)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[%s] 定时任务触发失败: %s", account_id, exc)
+        logger.exception("[%s] 定时任务触发失败: %s", account_id, exc)
 
 
 def start_fetch_contacts(account_id: str) -> bool:
+    _ensure_account_enabled(account_id)
     if not acquire_lock(account_id):
         raise RuntimeError("该账号已有任务在运行，请稍后再试")
-    threading.Thread(target=_contacts_worker, args=(account_id,), daemon=True).start()
-    return True
+    try:
+        _ensure_account_enabled(account_id)
+    except Exception:
+        lock_for(account_id).release()
+        raise
+    try:
+        threading.Thread(target=_contacts_worker, args=(account_id,), daemon=True).start()
+        return True
+    except Exception:
+        lock_for(account_id).release()
+        raise
 
 
 def _contacts_worker(account_id: str) -> None:
@@ -80,6 +209,16 @@ def _contacts_worker(account_id: str) -> None:
         contacts_fetching.add(account_id)
         try:
             sync_contacts(account_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[%s] 联系人同步异常: %s", account_id, exc)
+            try:
+                update_runtime(
+                    account_id,
+                    contacts_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                    contacts_error=f"联系人同步异常: {exc}",
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("[%s] 联系人同步错误状态保存失败", account_id)
         finally:
             contacts_fetching.discard(account_id)
     finally:
@@ -87,13 +226,26 @@ def _contacts_worker(account_id: str) -> None:
 
 
 def start_harvest_creator(account_id: str) -> bool:
-    if account_id in harvesting:
-        raise RuntimeError("creator 采集已在进行中")
-    if lock_for(account_id).locked():
-        raise RuntimeError("发送/同步任务进行中，请稍后再试")
-    harvesting.add(account_id)
-    threading.Thread(target=_harvest_worker, args=(account_id,), daemon=True).start()
-    return True
+    _ensure_account_enabled(account_id)
+    with _harvest_guard:
+        if account_id in harvesting:
+            raise RuntimeError("creator 采集已在进行中")
+        if not lock_for(account_id).acquire(blocking=False):
+            raise RuntimeError("发送/同步任务进行中，请稍后再试")
+        try:
+            _ensure_account_enabled(account_id)
+        except Exception:
+            lock_for(account_id).release()
+            raise
+        harvesting.add(account_id)
+    try:
+        threading.Thread(target=_harvest_worker, args=(account_id,), daemon=True).start()
+        return True
+    except Exception:
+        with _harvest_guard:
+            harvesting.discard(account_id)
+        lock_for(account_id).release()
+        raise
 
 
 def _harvest_worker(account_id: str) -> None:
@@ -102,20 +254,38 @@ def _harvest_worker(account_id: str) -> None:
         from core.runtime import record_harvest
         from core.harvester import creator_map
 
-        res = creator_map.collect_short_id_map(account_id=account_id)
-        merge_stats = None
-        if res.get("mapping"):
-            merge_stats = ledger.merge_creator_map(res["mapping"], account_id)
-        harvest_last = {
-            "at": res.get("at"),
-            "count": res.get("count"),
-            "hit": res.get("hit"),
-            "error": res.get("error"),
-            "merge": merge_stats,
-        }
-        record_harvest(harvest_last, account_id)
+        try:
+            res = creator_map.collect_short_id_map(account_id=account_id)
+            merge_stats = None
+            if res.get("mapping"):
+                merge_stats = ledger.merge_creator_map(res["mapping"], account_id)
+            harvest_last = {
+                "at": res.get("at"),
+                "count": res.get("count"),
+                "hit": res.get("hit"),
+                "error": res.get("error"),
+                "merge": merge_stats,
+            }
+            record_harvest(harvest_last, account_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[%s] creator 采集或结果保存异常: %s", account_id, exc)
+            try:
+                record_harvest(
+                    {
+                        "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                        "count": 0,
+                        "hit": 0,
+                        "error": f"creator 采集或结果保存异常: {exc}",
+                        "merge": None,
+                    },
+                    account_id,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("[%s] creator 异常结果保存失败", account_id)
     finally:
-        harvesting.discard(account_id)
+        with _harvest_guard:
+            harvesting.discard(account_id)
+        lock_for(account_id).release()
 
 
 def request_stop(account_id: str) -> bool:

@@ -27,6 +27,7 @@ const scanAccountName = ref('')
 const form = reactive({ name: '', device: '' })
 const scan = reactive<ScanStatus>({ status: 'idle', message: '', qrcode: '', error: '' })
 let timer: number | undefined
+let scanGeneration = 0
 
 async function load() {
   loading.value = true
@@ -115,10 +116,14 @@ async function del(account: Account) {
 function accountStatus(account: Account) {
   if (!account.enabled) return { type: 'info', label: '已停用' }
   if (account.running || account.contacts_fetching || account.harvesting) return { type: 'warning', label: '运行中' }
-  if (!account.state_file_exists || ['unknown', 'expired', 'failed', 'invalid'].includes(account.session_status || '')) {
-    return { type: 'danger', label: account.state_file_exists ? '需重新登录' : '未登录' }
-  }
+  if (!account.state_file_exists) return { type: 'danger', label: '未登录' }
+  if (['expired', 'failed', 'invalid'].includes(account.session_status || '')) return { type: 'danger', label: '需重新登录' }
+  if (account.session_status === 'unknown') return { type: 'warning', label: '待检测' }
   return { type: 'success', label: '正常' }
+}
+
+function canScan(account: Account) {
+  return account.enabled && !account.running && !account.contacts_fetching && !account.harvesting
 }
 
 function accountDisplayName(account: Account) {
@@ -151,6 +156,7 @@ function fmtTime(value?: string | null) {
 }
 
 async function openScan(account: Account) {
+  const generation = ++scanGeneration
   scanAccountId.value = account.id
   scanAccountName.value = accountDisplayName(account)
   scan.status = 'queuing'
@@ -160,23 +166,34 @@ async function openScan(account: Account) {
   scanDialogVisible.value = true
   try {
     await scanStart(account.id)
-    startPolling()
+    if (generation !== scanGeneration || scanAccountId.value !== account.id) {
+      // 旧请求没有服务端 session id，不能在同账号已有新会话时按账号取消，
+      // 否则旧响应会误取消刚刚重新发起的扫码。
+      if (scanAccountId.value !== account.id) void scanCancel(account.id).catch(() => undefined)
+      return
+    }
+    startPolling(account.id, generation)
   } catch (error: unknown) {
+    if (generation !== scanGeneration || scanAccountId.value !== account.id) return
     scanDialogVisible.value = false
     ElMessage.error(getErrorMessage(error, '扫码登录启动失败'))
   }
 }
 
-function startPolling() {
-  stopPolling()
+function startPolling(accountId: string, generation: number) {
+  if (timer) {
+    window.clearInterval(timer)
+    timer = undefined
+  }
   polling.value = true
-  timer = window.setInterval(poll, 1500)
+  timer = window.setInterval(() => void poll(accountId, generation), 1500)
 }
 
-async function poll() {
-  if (!scanAccountId.value) return
+async function poll(accountId: string, generation: number) {
+  if (generation !== scanGeneration || scanAccountId.value !== accountId) return
   try {
-    const { data } = await scanStatus(scanAccountId.value)
+    const { data } = await scanStatus(accountId)
+    if (generation !== scanGeneration || scanAccountId.value !== accountId) return
     Object.assign(scan, data)
     if (['success', 'failed', 'expired', 'cancelled'].includes(data.status)) {
       stopPolling()
@@ -186,12 +203,14 @@ async function poll() {
       }
     }
   } catch (error: unknown) {
+    if (generation !== scanGeneration || scanAccountId.value !== accountId) return
     stopPolling()
     ElMessage.error(getErrorMessage(error, '登录状态查询失败'))
   }
 }
 
 function stopPolling() {
+  scanGeneration += 1
   polling.value = false
   if (timer) {
     window.clearInterval(timer)
@@ -204,8 +223,8 @@ async function closeScan() {
     cancellingScan.value = true
     try { await scanCancel(scanAccountId.value) } catch { /* 扫码可能已结束 */ }
     cancellingScan.value = false
-    stopPolling()
   }
+  stopPolling()
   scanDialogVisible.value = false
 }
 
@@ -255,11 +274,11 @@ onUnmounted(stopPolling)
           <div class="account-name"><strong>{{ accountDisplayName(account) }}</strong><small>{{ accountDetail(account) }}</small></div>
           <div class="account-time"><span>下次任务</span><strong>{{ fmtTime(account.next_run) }}</strong></div>
           <el-tag :type="accountStatus(account).type" size="small">{{ accountStatus(account).label }}</el-tag>
-          <el-switch v-model="account.enabled" aria-label="启用账号" @change="toggle(account)" />
-          <el-button :type="accountStatus(account).type === 'danger' ? 'primary' : 'default'" size="small" @click="openScan(account)">{{ accountStatus(account).type === 'danger' ? '扫码登录' : '重新登录' }}</el-button>
+          <el-switch v-if="!account.is_default" v-model="account.enabled" aria-label="启用账号" @change="toggle(account)" />
+          <el-button :type="accountStatus(account).type === 'danger' ? 'primary' : 'default'" size="small" :disabled="!canScan(account)" @click="openScan(account)">{{ accountStatus(account).type === 'danger' ? '扫码登录' : '重新登录' }}</el-button>
           <el-dropdown trigger="click" @command="handleCommand($event, account)">
             <el-button text :icon="MoreFilled" aria-label="更多操作" />
-            <template #dropdown><el-dropdown-menu><el-dropdown-item command="check">检测登录状态</el-dropdown-item><el-dropdown-item command="rename">修改名称</el-dropdown-item><el-dropdown-item divided command="delete">删除账号</el-dropdown-item></el-dropdown-menu></template>
+            <template #dropdown><el-dropdown-menu><el-dropdown-item command="check">检测登录状态</el-dropdown-item><template v-if="!account.is_default"><el-dropdown-item command="rename">修改名称</el-dropdown-item><el-dropdown-item divided command="delete">删除账号</el-dropdown-item></template></el-dropdown-menu></template>
           </el-dropdown>
         </div>
       </div>

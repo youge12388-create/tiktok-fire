@@ -8,6 +8,8 @@ import time
 from datetime import datetime, timedelta
 from typing import Callable
 
+from apscheduler.events import EVENT_JOB_ERROR
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
@@ -19,6 +21,7 @@ logger = logging.getLogger("douyin-cloud-streak")
 TZ = "Asia/Shanghai"
 
 _scheduler: BackgroundScheduler | None = None
+_scheduler_ready = False
 _run_func: Callable | None = None
 _harvest_func: Callable | None = None
 
@@ -33,41 +36,103 @@ def _remove_job(job_id: str) -> None:
         return
     try:
         _scheduler.remove_job(job_id)
-    except Exception:
-        pass
+    except JobLookupError:
+        return
+    except Exception:  # noqa: BLE001
+        logger.exception("移除调度任务失败：%s", job_id)
+
+
+def _account_enabled(account_id: str) -> bool:
+    """实时读取账号注册状态；账号已删除时视为不可执行。"""
+    return any(
+        account["id"] == account_id and bool(account.get("enabled", True))
+        for account in list_accounts()
+    )
+
+
+def _account_allows_auto_run(account_id: str) -> bool:
+    return _account_enabled(account_id) and bool(load_config(account_id).get("auto_run_enabled", True))
+
+
+def _log_job_error(event) -> None:
+    """把 APScheduler 后台异常写入应用日志，避免只留在调度器内部。"""
+    logger.error(
+        "[%s] 调度任务执行异常: %s\n%s",
+        getattr(event, "job_id", "unknown"),
+        getattr(event, "exception", "unknown"),
+        getattr(event, "traceback", ""),
+    )
 
 
 def _daily_job(account_id: str) -> None:
+    if not _account_enabled(account_id):
+        logger.info("[%s] 账号已删除或停用，本次定时任务跳过", account_id)
+        return
     cfg = load_config(account_id)
     if not bool(cfg.get("auto_run_enabled", True)):
         logger.info("[%s] 自动运行已关闭（auto_run_enabled=false），本次定时任务跳过", account_id)
         return
-    jitter = max(0, int(cfg.get("jitter_minutes", 30) or 30))
+    # 0 表示明确关闭随机延迟，不能被 `or 30` 误解释成默认值。
+    raw_jitter = cfg.get("jitter_minutes", 30)
+    jitter = max(0, int(raw_jitter if raw_jitter is not None else 30))
     if jitter:
         delay = random.uniform(0, jitter * 60)
         logger.info("[%s] 随机延迟 %.0f 秒后开始发送（抖动窗口 %s 分钟）", account_id, delay, jitter)
         time.sleep(delay)
+    # 抖动期间账号可能被停用/删除，配置也可能关闭；执行前必须读取最新状态。
+    if not _account_allows_auto_run(account_id):
+        logger.info("[%s] 随机延迟后账号不可自动运行，本次定时任务跳过", account_id)
+        return
     if _run_func:
         _run_func(account_id=account_id)
 
 
 def _harvest_job(account_id: str) -> None:
-    if _harvest_func:
+    if _harvest_func and _account_enabled(account_id):
         _harvest_func(account_id=account_id)
 
 
 def configure(run_func: Callable, harvest_func: Callable | None = None) -> None:
     """注册每日发送任务与（可选）周级 creator 采集任务，按账号逐个注册。"""
-    global _scheduler, _run_func, _harvest_func
+    global _scheduler, _scheduler_ready, _run_func, _harvest_func
     _run_func = run_func
     _harvest_func = harvest_func
-    if _scheduler is None:
-        _scheduler = BackgroundScheduler(timezone=TZ)
-        _scheduler.start()
-    apply_schedule()
+    try:
+        if _scheduler is None:
+            _scheduler = BackgroundScheduler(timezone=TZ)
+            _scheduler.add_listener(_log_job_error, EVENT_JOB_ERROR)
+            _scheduler.start()
+        apply_schedule()
+    except Exception:
+        # 启动或首次注册失败时，不能让 health/readiness 误报为可用。
+        _scheduler_ready = False
+        logger.exception("调度器配置失败")
+        failed_scheduler = _scheduler
+        _scheduler = None
+        if failed_scheduler is not None:
+            try:
+                failed_scheduler.shutdown(wait=False)
+            except Exception:  # noqa: BLE001
+                logger.exception("调度器配置失败后的清理异常")
+        raise
 
 
 def apply_schedule(account_id: str | None = None) -> None:
+    """应用调度配置并维护 readiness 状态；失败时向调用方传播异常。"""
+    global _scheduler_ready
+    if _scheduler is None:
+        _scheduler_ready = False
+        return
+    try:
+        _apply_schedule(account_id)
+    except Exception:
+        _scheduler_ready = False
+        logger.exception("应用调度配置失败%s", f"（账号 {account_id}）" if account_id else "")
+        raise
+    _scheduler_ready = bool(getattr(_scheduler, "running", False))
+
+
+def _apply_schedule(account_id: str | None = None) -> None:
     """按账号应用/更新定时任务。account_id 为 None 时对全部账号执行。"""
     if _scheduler is None:
         return
@@ -76,6 +141,10 @@ def apply_schedule(account_id: str | None = None) -> None:
     if account_id is not None:
         accounts = [a for a in accounts if a["id"] == account_id]
     if not accounts:
+        if account_id is not None:
+            for kind in ("daily_send", "weekly_harvest", "retry"):
+                _remove_job(_job_id(account_id, kind))
+            logger.info("[%s] 账号不存在，关联调度任务已移除", account_id)
         return
 
     for acc in accounts:
@@ -83,6 +152,7 @@ def apply_schedule(account_id: str | None = None) -> None:
         if not acc.get("enabled", True):
             _remove_job(_job_id(aid, "daily_send"))
             _remove_job(_job_id(aid, "weekly_harvest"))
+            _remove_job(_job_id(aid, "retry"))
             logger.info("[%s] 账号已停用，定时任务已移除", aid)
             continue
 
@@ -102,6 +172,7 @@ def apply_schedule(account_id: str | None = None) -> None:
             logger.info("[%s] 定时任务已更新：每天 %s:%s (%s)", aid, hh, mm, TZ)
         else:
             _remove_job(_job_id(aid, "daily_send"))
+            _remove_job(_job_id(aid, "retry"))
             logger.info("[%s] 自动运行已关闭，已移除每日定时任务", aid)
 
         # 周级 creator 抖音号采集（默认周一 03:00；off/空 = 关闭）
@@ -148,28 +219,49 @@ def next_harvest_time(account_id: str | None = None) -> str | None:
 def schedule_retry(run_func: Callable, delay_minutes: int = 45, account_id: str | None = None) -> None:
     if _scheduler is None:
         return
-    job_id = _job_id(account_id or DEFAULT_ACCOUNT_ID, "retry")
+    aid = account_id or DEFAULT_ACCOUNT_ID
+    if not _account_allows_auto_run(aid):
+        logger.info("[%s] 账号不可自动运行，不安排补发任务", aid)
+        return
+    job_id = _job_id(aid, "retry")
     if _scheduler.get_job(job_id):
         return
-    run_at = datetime.now() + timedelta(minutes=delay_minutes)
+    run_at = datetime.now().astimezone() + timedelta(minutes=delay_minutes)
     _scheduler.add_job(
-        run_func,
+        _retry_job,
         DateTrigger(run_date=run_at, timezone=TZ),
+        args=[aid, run_func],
         id=job_id,
         replace_existing=True,
     )
-    logger.info("[%s] 已安排 %s 分钟后自动补发本次失败的好友", account_id or DEFAULT_ACCOUNT_ID, delay_minutes)
+    logger.info("[%s] 已安排 %s 分钟后自动补发本次失败的好友", aid, delay_minutes)
+
+
+def _retry_job(account_id: str, run_func: Callable) -> None:
+    """补发执行前再次确认账号仍存在、启用且允许自动运行。"""
+    if not _account_allows_auto_run(account_id):
+        logger.info("[%s] 补发触发时账号不可自动运行，本次补发跳过", account_id)
+        return
+    run_func()
 
 
 def cancel_retry(account_id: str | None = None) -> None:
     job_id = _job_id(account_id or DEFAULT_ACCOUNT_ID, "retry")
     if _scheduler and _scheduler.get_job(job_id):
-        _scheduler.remove_job(job_id)
+        _remove_job(job_id)
         logger.info("[%s] 已取消待执行的补发任务", account_id or DEFAULT_ACCOUNT_ID)
 
 
 def shutdown() -> None:
-    global _scheduler
+    global _scheduler, _scheduler_ready
+    _scheduler_ready = False
     if _scheduler:
-        _scheduler.shutdown(wait=False)
-        _scheduler = None
+        try:
+            _scheduler.shutdown(wait=False)
+        finally:
+            _scheduler = None
+
+
+def is_running() -> bool:
+    """返回调度器是否已启动，供 readiness 健康检查使用。"""
+    return bool(_scheduler_ready and _scheduler and getattr(_scheduler, "running", False))

@@ -42,14 +42,55 @@ def _archive_screenshot(result: dict, account_id: str, run_id: int) -> None:
 def _derive_status(ok_n: int, failed_n: int, uncertain_n: int, risk: bool, stopped: bool = False) -> str:
     if stopped:
         return "uncertain"
-    if risk or failed_n or (ok_n == 0 and uncertain_n == 0):
+    if risk or failed_n:
         return "failed"
     if uncertain_n:
         return "uncertain"
+    # 没有可发送目标或目标全部被安全规则跳过时，任务本身已正常结束，
+    # 不应被展示成“失败”。发送数量仍由 success_count/failed_count 体现。
     return "success"
 
 
-def record_run(result: dict, account_id: str, task_type: str = "spark") -> int:
+def start_run(account_id: str, task_type: str = "spark") -> int:
+    """先创建 running 记录，让后台任务从启动瞬间起可见。"""
+    return run_repo.create_run(
+        account_id=account_id,
+        task_type=task_type,
+        status="running",
+        started_at=_now(),
+        finished_at=None,
+        success_count=0,
+        failed_count=0,
+        risk_detected=False,
+        error=None,
+    )
+
+
+def _result_count(result: dict, key: str) -> int:
+    value = result.get(key)
+    return len(value) if isinstance(value, (list, tuple)) else 0
+
+
+def mark_run_uncertain(run_id: int, result: dict | None = None, reason: str = "运行结果落库失败，结果状态未知") -> bool:
+    """持久化异常时结束预创建记录，避免历史中永久残留 running。"""
+    result = result if isinstance(result, dict) else {}
+    return run_repo.update_run(
+        run_id,
+        status="uncertain",
+        finished_at=_now(),
+        success_count=_result_count(result, "ok"),
+        failed_count=_result_count(result, "failed"),
+        risk_detected=bool(result.get("risk_detected") or result.get("rate_limited")),
+        error=reason[:500],
+    )
+
+
+def record_run(
+    result: dict,
+    account_id: str,
+    task_type: str = "spark",
+    run_id: int | None = None,
+) -> int:
     """把一次自动化运行结果落库，返回 run_id。"""
     core_runtime.record_run(result, account_id)  # 保留 runtime.json 兼容历史
 
@@ -70,17 +111,39 @@ def record_run(result: dict, account_id: str, task_type: str = "spark") -> int:
     started_at = result.get("at") or _now()
     finished = _now()
     status = _derive_status(ok_n, failed_n, uncertain_n, risk, stopped)
-    run_id = run_repo.create_run(
-        account_id=account_id,
-        task_type=task_type,
+    if run_id is None:
+        run_id = run_repo.create_run(
+            account_id=account_id,
+            task_type=task_type,
+            status=status,
+            started_at=started_at,
+            finished_at=finished,
+            success_count=ok_n,
+            failed_count=failed_n,
+            risk_detected=risk,
+            error=error,
+        )
+    elif not run_repo.update_run(
+        run_id,
         status=status,
-        started_at=started_at,
         finished_at=finished,
         success_count=ok_n,
         failed_count=failed_n,
         risk_detected=risk,
         error=error,
-    )
+    ):
+        # 记录可能因人工清理或旧数据库异常消失；不要因此丢掉本次结果。
+        run_id = run_repo.create_run(
+            account_id=account_id,
+            task_type=task_type,
+            status=status,
+            started_at=started_at,
+            finished_at=finished,
+            success_count=ok_n,
+            failed_count=failed_n,
+            risk_detected=risk,
+            error=error,
+        )
 
     message = result.get("message") if isinstance(result.get("message"), str) else None
     for name in result.get("ok", []):

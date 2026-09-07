@@ -66,7 +66,7 @@ onMounted(() => void load())
         <el-skeleton :rows="5" animated />
       </template>
 
-      <template v-else>
+      <template v-else-if="summary">
         <div class="service-status">
           <span class="status-icon"><el-icon><CircleCheck /></el-icon></span>
           <div>
@@ -109,6 +109,12 @@ onMounted(() => void load())
           </el-collapse-item>
         </el-collapse>
       </template>
+      <div v-else class="empty-panel status-unavailable">
+        <el-icon><InfoFilled /></el-icon>
+        <h3>暂时无法读取服务状态</h3>
+        <p>请确认后端服务和网络连接正常后重试。</p>
+        <el-button type="primary" @click="load">重新加载</el-button>
+      </div>
     </section>
   </div>
 </template>

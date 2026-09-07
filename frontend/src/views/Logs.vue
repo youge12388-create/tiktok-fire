@@ -21,7 +21,7 @@ const hasFilters = computed(() => Boolean(filters.account_id || filters.status |
 
 function statusType(status: string) {
   if (status === 'success') return 'success'
-  if (status === 'uncertain') return 'warning'
+  if (status === 'uncertain' || status === 'running') return 'warning'
   return 'danger'
 }
 
@@ -149,6 +149,7 @@ onMounted(() => {
           <el-option label="成功" value="success" />
           <el-option label="失败" value="failed" />
           <el-option label="待确认" value="uncertain" />
+          <el-option label="执行中" value="running" />
         </el-select>
         <el-date-picker
           v-model="filters.date"

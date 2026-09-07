@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import threading
 import uuid
@@ -24,7 +25,7 @@ REGISTRY_PATH = DATA_DIR / "accounts" / "accounts.json"
 
 MAX_CONCURRENT_BROWSERS = 5  # 全局最大并发浏览器会话数（参考 2.1 商业版）
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 _current_account: threading.local = threading.local()
 
 
@@ -62,44 +63,47 @@ def _load_registry() -> dict[str, dict]:
 def _save_registry(reg: dict[str, dict]) -> None:
     REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
     entries = sorted(reg.values(), key=lambda a: a.get("created_at", ""))
-    REGISTRY_PATH.write_text(
-        json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    tmp = REGISTRY_PATH.with_name(f"{REGISTRY_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, REGISTRY_PATH)
 
 
 def list_accounts() -> list[dict]:
     """返回全部账号（含隐式 default），附带各账号数据目录与启用状态。"""
-    reg = _load_registry()
-    out: list[dict] = []
-    ids = ["default"] + sorted(k for k in reg if k != "default")
-    for aid in ids:
-        meta = reg.get(aid) or _default_account(aid)
-        d = account_dir(aid)
-        entry = {
-            **meta,
-            "is_default": aid == "default",
-            "dir": str(d),
-            "state_file_exists": (d / "state.json").exists(),
-            "config_file_exists": (d / "config.json").exists(),
-        }
-        out.append(entry)
-    return out
+    with _lock:
+        reg = _load_registry()
+        out: list[dict] = []
+        ids = ["default"] + sorted(k for k in reg if k != "default")
+        for aid in ids:
+            meta = reg.get(aid) or _default_account(aid)
+            d = account_dir(aid)
+            entry = {
+                **meta,
+                "is_default": aid == "default",
+                "dir": str(d),
+                "state_file_exists": (d / "state.json").exists(),
+                "config_file_exists": (d / "config.json").exists(),
+            }
+            out.append(entry)
+        return out
 
 
 def get_account(account_id: str) -> dict | None:
-    if account_id == "default":
-        return {
-            **_default_account("default"),
-            "is_default": True,
-            "dir": str(account_dir("default")),
-        }
-    return _load_registry().get(account_id)
+    with _lock:
+        if account_id == "default":
+            return {
+                **_default_account("default"),
+                "is_default": True,
+                "dir": str(account_dir("default")),
+            }
+        return _load_registry().get(account_id)
 
 
 def account_exists(account_id: str) -> bool:
-    if account_id == "default":
-        return True
-    return account_id in _load_registry()
+    with _lock:
+        if account_id == "default":
+            return True
+        return account_id in _load_registry()
 
 
 def create_account(name: str = "", device: str = "") -> dict:

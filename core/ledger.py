@@ -8,10 +8,13 @@ display_name 变为可变字段。匹配铁律：display_name 相同即视为同
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from collections import Counter
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 
 from .config import DEFAULT_ACCOUNT_ID, account_dir
@@ -22,7 +25,17 @@ def ledger_path(account_id: str | None = None) -> Path:
     return account_dir(account_id) / "ledger.json"
 
 
-_lock = threading.Lock()
+_lock = threading.RLock()
+
+
+def _locked(func):
+    """让台账的读-改-写操作在同一把锁内完成，避免并发请求互相覆盖。"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with _lock:
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 def _now() -> str:
@@ -44,6 +57,7 @@ def _default_entry(display_name: str) -> dict:
         "last_sent_at": None,
         "channel": "none",        # consumer | creator | none
         "join_confidence": "low",  # high: display_name 与 nickname 已对上；low: 未确认
+        "identity_ambiguous": False,  # 同名联系人无法唯一定位时，禁止自动发送
         "source": {"creator": False, "consumer": False},
     }
 
@@ -60,6 +74,7 @@ def _norm_ws(s) -> str:
     return str(s or "").replace("\u00a0", " ").strip()
 
 
+@_locked
 def load_ledger(account_id: str | None = None) -> list[dict]:
     entries: list[dict] = []
     lp = ledger_path(account_id)
@@ -68,7 +83,9 @@ def load_ledger(account_id: str | None = None) -> list[dict]:
             data = json.loads(lp.read_text(encoding="utf-8"))
             if isinstance(data, list):
                 entries = [dict(e) for e in data if isinstance(e, dict) and e.get("display_name")]
+                name_counts = Counter(str(e.get("display_name", "")).strip() for e in entries)
                 for e in entries:
+                    e["identity_ambiguous"] = bool(e.get("identity_ambiguous")) or name_counts.get(str(e.get("display_name", "")).strip(), 0) > 1
                     # 派生标记（不持久化，读时计算保证一致）：
                     # no_consumer_conversation：consumer 私信无会话（自动识别，不限来源）
                     #   → 勾选也不会被通道 A 发送（默认 skipped 或降级），除非开启通道 B
@@ -85,9 +102,9 @@ def _save(entries: list[dict], account_id: str | None = None) -> None:
         d = account_dir(account_id)
         d.mkdir(parents=True, exist_ok=True)
         lp = ledger_path(account_id)
-        lp.write_text(
-            json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        tmp = lp.with_name(f"{lp.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, lp)
 
 
 def _upsert(entries: list[dict], entry: dict) -> dict:
@@ -99,11 +116,13 @@ def _upsert(entries: list[dict], entry: dict) -> dict:
         if e.get("display_name") == entry["display_name"]:
             selected = e.get("selected", False)
             last_sent = e.get("last_sent_at")
+            identity_ambiguous = bool(e.get("identity_ambiguous"))
             e.update(entry)
             for k, v in _default_entry(entry["display_name"]).items():
                 e.setdefault(k, v)
             e["selected"] = selected
             e["last_sent_at"] = last_sent
+            e["identity_ambiguous"] = identity_ambiguous or bool(entry.get("identity_ambiguous"))
             return e
     base = _default_entry(entry["display_name"])
     base.update(entry)
@@ -111,6 +130,7 @@ def _upsert(entries: list[dict], entry: dict) -> dict:
     return base
 
 
+@_locked
 def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None) -> dict:
     """把 consumer 会话列表（fetch_chat_contacts 的 names 字段）upsert 进台账。
 
@@ -122,6 +142,8 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
     updated = 0
     by_name = {e.get("display_name"): e for e in entries}
     contacts = contacts or []
+    names = [str(c.get("name", "")).strip() for c in contacts if str(c.get("name", "")).strip()]
+    duplicate_names = {name for name, count in Counter(names).items() if count > 1}
 
     def _resolve_avatar(c: dict) -> str:
         """并发下载头像；下载失败或为空时保留旧头像。"""
@@ -149,6 +171,7 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
             "has_conversation": True,
             "channel": "consumer",
             "avatar": avatar_path or old_avatar,
+            "identity_ambiguous": name in duplicate_names,
         })
         e.setdefault("source", {})["consumer"] = True
         # creator 侧已确认且两侧名字一致 → 置信度升级 high
@@ -163,6 +186,7 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
     return {"added": added, "updated": updated, "total": len(entries)}
 
 
+@_locked
 def import_config_friends(friends: list[str], account_id: str | None = None) -> dict:
     """兼容迁移：把 config.json 的 friends 同步进台账并默认勾选。
 
@@ -199,6 +223,7 @@ def get_selected(account_id: str | None = None) -> list[dict]:
     return [e for e in load_ledger(account_id) if e.get("selected")]
 
 
+@_locked
 def merge_creator_map(mapping: dict, account_id: str | None = None) -> dict:
     """把 creator 采集的 {short_id: {nickname, user_id}} 合并进台账（预 join，乐观）。
 
@@ -299,6 +324,7 @@ def merge_creator_map(mapping: dict, account_id: str | None = None) -> dict:
     return {"joined": joined, "added": added, "updated": updated, "total": len(entries)}
 
 
+@_locked
 def confirm_join(display_name: str, account_id: str | None = None) -> None:
     """发送时确认（P1 关键兜底）：该 display_name 的会话已在 consumer 页成功定位+标题校验通过。
 
@@ -316,6 +342,7 @@ def confirm_join(display_name: str, account_id: str | None = None) -> None:
     _save(entries, account_id)
 
 
+@_locked
 def set_selected(entries_in: list[dict], account_id: str | None = None) -> dict:
     """批量更新勾选与勾选顺序：entries: [{display_name, selected, selected_order}]。
 
@@ -357,6 +384,7 @@ def set_selected(entries_in: list[dict], account_id: str | None = None) -> dict:
     return {"updated": updated, "added": added}
 
 
+@_locked
 def update_send_result(
     display_name: str,
     ok: bool,
@@ -380,6 +408,7 @@ def update_send_result(
     _save(entries, account_id)
 
 
+@_locked
 def mark_no_consumer_conversation(display_name: str, account_id: str | None = None) -> None:
     """自愈：通道 A 在 consumer 页定位失败时调用（仅对 creator-only 条目）。
 
@@ -398,6 +427,7 @@ def mark_no_consumer_conversation(display_name: str, account_id: str | None = No
         _save(entries, account_id)
 
 
+@_locked
 def remove_contacts(names: list[str], account_id: str | None = None) -> dict:
     """从台账删除指定联系人（按 display_name）。
 

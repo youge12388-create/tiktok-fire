@@ -73,6 +73,12 @@ _lock = threading.Lock()
 
 
 def load_config(account_id: str | None = None) -> dict:
+    with _lock:
+        return _load_unlocked(account_id)
+
+
+def _load_unlocked(account_id: str | None = None) -> dict:
+    """读取配置；调用方已持有 _lock 时使用。"""
     aid = account_id or DEFAULT_ACCOUNT_ID
     cfg = dict(DEFAULT_CONFIG)
     cpath = account_config_path(aid)
@@ -90,39 +96,42 @@ def save_config(cfg: dict | None, account_id: str | None = None) -> dict:
     aid = account_id or DEFAULT_ACCOUNT_ID
     # 合并式保存：先读已持久化的配置，再用传入字段覆盖，避免部分更新（如任务页
     # 只保存时间/文案）把未传入的字段（如 friends / messages）重置为空。
-    merged = load_config(aid)
-    if cfg:
-        merged.update(cfg)
-
-    merged["friends"] = [str(x).strip() for x in merged.get("friends", []) if str(x).strip()]
-    merged["messages"] = [str(x) for x in merged.get("messages", []) if str(x).strip()]
-    if not merged["messages"]:
-        merged["messages"] = ["🔥"]
-
-    schedule = str(merged.get("schedule_time", "21:00"))
-    try:
-        hh, mm = schedule.split(":")
-        if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
-            raise ValueError
-        merged["schedule_time"] = f"{int(hh):02d}:{int(mm):02d}"
-    except Exception:
-        raise ValueError("schedule_time 必须是 HH:MM 格式")
-
-    for key in ("jitter_minutes", "send_gap_min", "send_gap_max", "max_friends_per_run", "creator_max_scrolls", "first_message_daily_limit"):
-        try:
-            merged[key] = max(0, int(merged.get(key, DEFAULT_CONFIG[key])))
-        except (TypeError, ValueError):
-            raise ValueError(f"{key} 必须是整数")
-    if merged["send_gap_max"] < merged["send_gap_min"]:
-        merged["send_gap_max"] = merged["send_gap_min"]
-    merged["auto_run_enabled"] = bool(merged.get("auto_run_enabled"))
-    merged["allow_first_message"] = bool(merged.get("allow_first_message"))
-    day = str(merged.get("schedule_harvest_day") or "").strip().lower()
-    merged["schedule_harvest_day"] = day if day in {"mon", "tue", "wed", "thu", "fri", "sat", "sun", "off"} else "off"
-
     with _lock:
+        # 在同一把锁内完成读改写，避免任务配置与联系人选择互相覆盖。
+        merged = _load_unlocked(aid)
+        if cfg:
+            merged.update(cfg)
+
+        merged["friends"] = [str(x).strip() for x in merged.get("friends", []) if str(x).strip()]
+        merged["messages"] = [str(x) for x in merged.get("messages", []) if str(x).strip()]
+        if not merged["messages"]:
+            merged["messages"] = ["🔥"]
+
+        schedule = str(merged.get("schedule_time", "21:00"))
+        try:
+            hh, mm = schedule.split(":")
+            if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+                raise ValueError
+            merged["schedule_time"] = f"{int(hh):02d}:{int(mm):02d}"
+        except Exception:
+            raise ValueError("schedule_time 必须是 HH:MM 格式")
+
+        for key in ("jitter_minutes", "send_gap_min", "send_gap_max", "max_friends_per_run", "creator_max_scrolls", "first_message_daily_limit"):
+            try:
+                merged[key] = max(0, int(merged.get(key, DEFAULT_CONFIG[key])))
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} 必须是整数")
+        if merged["send_gap_max"] < merged["send_gap_min"]:
+            merged["send_gap_max"] = merged["send_gap_min"]
+        merged["auto_run_enabled"] = bool(merged.get("auto_run_enabled"))
+        merged["allow_first_message"] = bool(merged.get("allow_first_message"))
+        day = str(merged.get("schedule_harvest_day") or "").strip().lower()
+        merged["schedule_harvest_day"] = day if day in {"mon", "tue", "wed", "thu", "fri", "sat", "sun", "off"} else "off"
+
         d = account_dir(aid)
         d.mkdir(parents=True, exist_ok=True)
         cpath = account_config_path(aid)
-        cpath.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = cpath.with_name(f"{cpath.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, cpath)
     return merged

@@ -2,7 +2,22 @@
 data/
 .env
 state.json
+.agent/
+.tmp/
+.impeccable/
+logs/
+# 覆盖嵌套目录，避免将工具或子模块中的本地凭据带入构建上下文。
+**/.env
+**/state.json
+**/data/
+**/.agent/
+**/.tmp/
+**/.impeccable/
+**/logs/
 *.log
+*.log.*
+*.tmp
+*.pid
 *.png
 *.jpg
 *.jpeg

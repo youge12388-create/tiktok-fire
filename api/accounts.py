@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from services import account_service
 from services.douyin import douyin
@@ -15,9 +15,9 @@ router = APIRouter(prefix="/accounts", tags=["accounts"], dependencies=[Depends(
 
 
 class AccountBody(BaseModel):
-    model_config = ConfigDict(extra="allow")
-    name: str = ""
-    device: str = ""
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, max_length=100)
+    device: str | None = Field(default=None, max_length=200)
     enabled: bool | None = None
 
 
@@ -41,7 +41,7 @@ def create_account(body: AccountBody):
 @router.patch("/{account_id}")
 def update_account(account_id: str, body: AccountBody):
     aid = _resolve(account_id)
-    acc = account_service.update_account(aid, name=body.name or None, device=body.device or None, enabled=body.enabled)
+    acc = account_service.update_account(aid, name=body.name, device=body.device, enabled=body.enabled)
     if acc is None:
         raise HTTPException(status_code=400, detail="默认账号不允许停用/删除")
     return {"ok": True, "account": acc}
