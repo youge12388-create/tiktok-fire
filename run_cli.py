@@ -156,7 +156,7 @@ def main():
 
         if not selected:
             print("\n[⚠️ 提示] 台账中未勾选任何好友，且未检测到带火花的好友！")
-            print("👉 建议双击「3.启动管理后台.bat」进入网页端勾选好友，")
+            print("👉 建议运行 `.venv\\Scripts\\python app.py` 启动网页后台后勾选好友，")
             print("   或者在 config.json 填入好友昵称。")
             sys.exit(1)
 

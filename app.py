@@ -37,7 +37,6 @@ from db import init_db
 from services.task_runtime import _scheduled_run, start_harvest_creator
 
 BASE_DIR = Path(__file__).resolve().parent
-STATIC_DIR = BASE_DIR / "static"
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 PID_PATH = DATA_DIR / "server.pid"
 
