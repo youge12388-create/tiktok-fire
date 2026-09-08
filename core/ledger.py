@@ -46,6 +46,7 @@ def _default_entry(display_name: str) -> dict:
     """P1 完整 schema：display_name 为 P0 主键，short_id 为业务主键（不可变）。"""
     return {
         "display_name": display_name,
+        "contact_key": f"name:{display_name}",
         "nickname": "",
         "short_id": "",
         "user_id": "",
@@ -74,6 +75,17 @@ def _norm_ws(s) -> str:
     return str(s or "").replace("\u00a0", " ").strip()
 
 
+def _consumer_contact_key(contact: dict) -> str:
+    """优先使用页面会话标识；旧页面/旧数据则以昵称键兼容。"""
+    conversation_id = str(contact.get("conversation_id", "")).strip()
+    if conversation_id:
+        return f"conversation:{conversation_id}"
+    sync_key = str(contact.get("sync_key", "")).strip()
+    if sync_key:
+        return f"sync:{sync_key}"
+    return f"name:{str(contact.get('name', '')).strip()}"
+
+
 @_locked
 def load_ledger(account_id: str | None = None) -> list[dict]:
     entries: list[dict] = []
@@ -85,6 +97,7 @@ def load_ledger(account_id: str | None = None) -> list[dict]:
                 entries = [dict(e) for e in data if isinstance(e, dict) and e.get("display_name")]
                 name_counts = Counter(str(e.get("display_name", "")).strip() for e in entries)
                 for e in entries:
+                    e.setdefault("contact_key", f"name:{e.get('display_name', '')}")
                     e["identity_ambiguous"] = bool(e.get("identity_ambiguous")) or name_counts.get(str(e.get("display_name", "")).strip(), 0) > 1
                     # 派生标记（不持久化，读时计算保证一致）：
                     # no_consumer_conversation：consumer 私信无会话（自动识别，不限来源）
@@ -108,12 +121,13 @@ def _save(entries: list[dict], account_id: str | None = None) -> None:
 
 
 def _upsert(entries: list[dict], entry: dict) -> dict:
-    """按 display_name upsert：更新新字段，但保留已有条目的 selected / last_sent_at。
+    """按 contact_key upsert：更新新字段，但保留已有条目的 selected / last_sent_at。
 
     新增条目补齐默认字段，保证 schema 一致。返回命中/新增的条目。
     """
+    contact_key = entry.get("contact_key") or f"name:{entry['display_name']}"
     for e in entries:
-        if e.get("display_name") == entry["display_name"]:
+        if e.get("contact_key", f"name:{e.get('display_name', '')}") == contact_key:
             selected = e.get("selected", False)
             last_sent = e.get("last_sent_at")
             identity_ambiguous = bool(e.get("identity_ambiguous"))
@@ -125,6 +139,7 @@ def _upsert(entries: list[dict], entry: dict) -> dict:
             e["identity_ambiguous"] = identity_ambiguous or bool(entry.get("identity_ambiguous"))
             return e
     base = _default_entry(entry["display_name"])
+    base["contact_key"] = contact_key
     base.update(entry)
     entries.append(base)
     return base
@@ -140,10 +155,10 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
     entries = load_ledger(account_id)
     added = 0
     updated = 0
-    by_name = {e.get("display_name"): e for e in entries}
+    by_key = {e.get("contact_key", f"name:{e.get('display_name', '')}"): e for e in entries}
     contacts = contacts or []
-    names = [str(c.get("name", "")).strip() for c in contacts if str(c.get("name", "")).strip()]
-    duplicate_names = {name for name, count in Counter(names).items() if count > 1}
+    contact_keys = [_consumer_contact_key(c) for c in contacts if str(c.get("name", "")).strip()]
+    duplicate_keys = {key for key, count in Counter(contact_keys).items() if count > 1}
 
     def _resolve_avatar(c: dict) -> str:
         """并发下载头像；下载失败或为空时保留旧头像。"""
@@ -153,7 +168,7 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
         new_avatar = fetch_and_save_avatar(avatar_url, account_id)
         if new_avatar:
             return new_avatar
-        old = by_name.get(str(c.get("name", "")).strip())
+        old = by_key.get(_consumer_contact_key(c))
         return (old.get("avatar") or "") if old else ""
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -163,17 +178,20 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
         name = str(c.get("name", "")).strip()
         if not name:
             continue
-        exists = name in by_name
-        old_avatar = (by_name.get(name) or {}).get("avatar") or ""
+        contact_key = _consumer_contact_key(c)
+        exists = contact_key in by_key
+        old_avatar = (by_key.get(contact_key) or {}).get("avatar") or ""
         e = _upsert(entries, {
             "display_name": name,
+            "contact_key": contact_key,
             "streak_days": _parse_streak(c.get("streak")),
             "has_conversation": True,
             "channel": "consumer",
             "avatar": avatar_path or old_avatar,
-            "identity_ambiguous": name in duplicate_names,
+            "identity_ambiguous": contact_key in duplicate_keys,
         })
         e.setdefault("source", {})["consumer"] = True
+        by_key[contact_key] = e
         # creator 侧已确认且两侧名字一致 → 置信度升级 high
         if e.get("source", {}).get("creator") and e.get("nickname") == name:
             e["join_confidence"] = "high"
@@ -182,6 +200,13 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
         else:
             added += 1
     if added or updated:
+        # 当前发送定位仍依赖昵称；同名会话即使采集到唯一键也必须禁止自动发送。
+        display_counts = Counter(str(e.get("display_name", "")).strip() for e in entries)
+        for entry in entries:
+            entry["identity_ambiguous"] = (
+                display_counts.get(str(entry.get("display_name", "")).strip(), 0) > 1
+                or entry.get("contact_key") in duplicate_keys
+            )
         _save(entries, account_id)
     return {"added": added, "updated": updated, "total": len(entries)}
 
@@ -352,17 +377,18 @@ def set_selected(entries_in: list[dict], account_id: str | None = None) -> dict:
     返回 {"updated", "added"}。
     """
     entries = load_ledger(account_id)
-    by_name = {e.get("display_name"): e for e in entries}
+    by_key = {e.get("contact_key", f"name:{e.get('display_name', '')}"): e for e in entries}
     updated = 0
     added = 0
     for it in entries_in:
         name = str(it.get("display_name", "")).strip()
+        contact_key = str(it.get("contact_key") or f"name:{name}").strip()
         sel = bool(it.get("selected"))
         order = it.get("selected_order")
         if not name:
             continue
-        if name in by_name:
-            e = by_name[name]
+        if contact_key in by_key:
+            e = by_key[contact_key]
             if bool(e.get("selected")) != sel:
                 e["selected"] = sel
                 updated += 1
@@ -373,11 +399,12 @@ def set_selected(entries_in: list[dict], account_id: str | None = None) -> dict:
         else:
             entries.append({
                 **_default_entry(name),
+                "contact_key": contact_key,
                 "has_conversation": False,
                 "selected": sel,
                 "selected_order": order if sel else None,
             })
-            by_name[name] = entries[-1]
+            by_key[contact_key] = entries[-1]
             added += 1
     if updated or added:
         _save(entries, account_id)
@@ -428,20 +455,26 @@ def mark_no_consumer_conversation(display_name: str, account_id: str | None = No
 
 
 @_locked
-def remove_contacts(names: list[str], account_id: str | None = None) -> dict:
-    """从台账删除指定联系人（按 display_name）。
+def remove_contacts(
+    names: list[str], account_id: str | None = None, contact_keys: list[str] | None = None
+) -> dict:
+    """从台账删除指定联系人（优先按 contact_key，兼容 display_name）。
 
     仅清理台账条目；调用方负责同步清理 config.friends，避免选择状态残留。
     返回 {"removed", "total"}。
     """
     remove = {str(n).strip() for n in (names or []) if str(n).strip()}
-    if not remove:
+    remove_keys = {str(key).strip() for key in (contact_keys or []) if str(key).strip()}
+    if not remove and not remove_keys:
         return {"removed": 0, "total": len(load_ledger(account_id))}
     entries = load_ledger(account_id)
     before = len(entries)
     entries = [
         e for e in entries
-        if str(e.get("display_name", "")).strip() not in remove
+        if (
+            str(e.get("display_name", "")).strip() not in remove
+            and str(e.get("contact_key", f"name:{e.get('display_name', '')}")).strip() not in remove_keys
+        )
     ]
     removed = before - len(entries)
     if removed:

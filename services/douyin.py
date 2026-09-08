@@ -10,6 +10,8 @@ from core import automation, login_session, scheduler
 from core.config import get_valid_state_path
 from core.runtime import update_runtime
 
+from .notification_service import report_session_expired, report_session_ok
+
 
 class DouyinService:
     def run_spark(self, account_id: str, dry_run: bool = False, only_names: list[str] | None = None) -> dict:
@@ -33,7 +35,7 @@ class DouyinService:
         """检测登录态：优先校验 state 文件，必要时打开浏览器真实检测。"""
         state_path = get_valid_state_path(account_id)
         if state_path is None:
-            update_runtime(account_id, session_status="expired")
+            report_session_expired(account_id, "未找到有效登录态 state.json")
             return {
                 "logged_in": False,
                 "reason": "未找到有效登录态 state.json",
@@ -47,7 +49,10 @@ class DouyinService:
                 page.goto(CHAT_URL, timeout=90000, wait_until="domcontentloaded")
                 page.wait_for_timeout(3000)
                 logged, why = check_login(page)
-                update_runtime(account_id, session_status="ok" if logged else "expired")
+                if logged:
+                    report_session_ok(account_id)
+                else:
+                    report_session_expired(account_id, why)
                 return {
                     "logged_in": logged,
                     "reason": why,

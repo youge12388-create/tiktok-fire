@@ -17,6 +17,7 @@ const keyword = ref('')
 const loading = ref(false)
 const syncing = ref(false)
 const selectionSaving = ref(false)
+const syncSummary = ref<{ complete?: boolean; rounds?: number; warning?: string | null }>({})
 let timer: number | undefined
 let contactsRequestId = 0
 
@@ -32,6 +33,12 @@ const filtered = computed(() => {
   return contacts.value.filter((contact) => (contact.name || '').toLowerCase().includes(search))
 })
 const selectedCount = computed(() => contacts.value.filter((contact) => contact.checked && !contact.identity_ambiguous).length)
+const syncStatus = computed(() => {
+  if (!syncSummary.value.rounds) return ''
+  return syncSummary.value.complete
+    ? ` · 已完整扫描 ${syncSummary.value.rounds} 轮`
+    : ` · 同步未确认完整（${syncSummary.value.rounds} 轮）`
+})
 
 function accountStatus(account?: Account) {
   if (!account) return { label: '未选择', type: 'info' }
@@ -67,7 +74,13 @@ async function loadContacts(requestedAccountId = accountId.value) {
       ...contact,
       checked: !!contact.selected && !contact.identity_ambiguous
     }))
+    syncSummary.value = {
+      complete: data.contacts_complete,
+      rounds: data.contacts_scan_rounds,
+      warning: data.contacts_warning
+    }
     if (data.contacts_error) ElMessage.warning(data.contacts_error)
+    if (data.contacts_warning) ElMessage.warning(data.contacts_warning)
   } catch (error: unknown) {
     if (requestId !== contactsRequestId || accountId.value !== requestedAccountId) return
     ElMessage.error(getErrorMessage(error, '联系人加载失败，请稍后重试'))
@@ -108,12 +121,20 @@ function startPolling(pollingAccountId: string) {
     try {
       const { data } = await listContacts(pollingAccountId)
       if (accountId.value !== pollingAccountId) return
-      if (!data.fetching || attempts >= 30) {
+      if (!data.fetching) {
         stopPolling()
         syncing.value = false
         await loadContacts(pollingAccountId)
         if (accountId.value !== pollingAccountId) return
-        ElMessage.success(data.fetching ? '已显示当前同步结果' : '联系人同步完成')
+        if (data.contacts_complete === false) {
+          ElMessage.warning('同步结束但未确认完整，请稍后重试并查看同步状态')
+        } else {
+          ElMessage.success('联系人同步完成')
+        }
+      } else if (attempts >= 180) {
+        stopPolling()
+        syncing.value = false
+        ElMessage.warning('同步仍在后台进行，请稍后刷新页面查看进度')
       }
     } catch {
       if (accountId.value !== pollingAccountId) return
@@ -138,7 +159,10 @@ async function saveSelection() {
     const names = contacts.value
       .filter((contact) => contact.checked && !contact.identity_ambiguous)
       .map((contact) => contact.name)
-    await setContactsSelection(accountId.value, names)
+    const contactKeys = contacts.value
+      .filter((contact) => contact.checked && !contact.identity_ambiguous)
+      .map((contact) => contact.id)
+    await setContactsSelection(accountId.value, names, contactKeys)
   } catch (error: unknown) {
     ElMessage.error(getErrorMessage(error, '联系人选择保存失败'))
     await loadContacts()
@@ -171,7 +195,7 @@ async function removeContact(contact: Contact) {
     return
   }
   try {
-    await deleteContacts(accountId.value, [contact.name])
+    await deleteContacts(accountId.value, [], [contact.id])
     ElMessage.success('联系人已删除')
     await loadContacts()
   } catch (error: unknown) {
@@ -203,7 +227,7 @@ onUnmounted(stopPolling)
       </div>
 
       <div class="section-header">
-        <div><h2 class="section-title">续火联系人</h2><p class="section-description">已选 {{ selectedCount }} / {{ contacts.length }}{{ selectionSaving ? ' · 正在保存' : '' }}</p></div>
+        <div><h2 class="section-title">续火联系人</h2><p class="section-description">已选 {{ selectedCount }} / {{ contacts.length }}{{ selectionSaving ? ' · 正在保存' : '' }}{{ syncStatus }}</p></div>
         <div class="bulk-actions"><el-button text size="small" :disabled="!contacts.length || selectionSaving" @click="selectAll">全选</el-button><el-button text size="small" :disabled="!contacts.length || selectionSaving" @click="clearAll">清空</el-button></div>
       </div>
 

@@ -112,12 +112,54 @@ def record_contacts(data: dict, account_id: str | None = None) -> None:
         rt["contacts"] = data.get("names", [])
         rt["contacts_at"] = data.get("at")
         rt["contacts_error"] = data.get("error")
+        rt["contacts_warning"] = data.get("warning")
+        rt["contacts_complete"] = bool(data.get("complete"))
+        rt["contacts_scan_rounds"] = int(data.get("scan_rounds") or 0)
+        rt["contacts_stop_reason"] = data.get("stop_reason") or ""
 
     _mutate(account_id, update)
 
 
 def update_runtime(account_id: str | None = None, **fields) -> None:
     _mutate(account_id, lambda rt: rt.update(fields))
+
+
+def claim_login_expired_alert(account_id: str, reason: str) -> bool:
+    """原子地领取一次登录失效告警，防止并发任务重复通知。"""
+    claimed = False
+
+    def update(rt: dict) -> None:
+        nonlocal claimed
+        alert = rt.get("login_expired_alert") or {}
+        if alert.get("active"):
+            return
+        rt["login_expired_alert"] = {
+            "active": True,
+            "reason": str(reason)[:300],
+        }
+        claimed = True
+
+    _mutate(account_id, update)
+    return claimed
+
+
+def finish_login_expired_alert(account_id: str, delivered: bool) -> None:
+    """记录告警尝试结果；即使投递失败也保持 active，避免反复轰炸。"""
+    def update(rt: dict) -> None:
+        alert = rt.get("login_expired_alert") or {}
+        if alert.get("active"):
+            alert["delivered"] = bool(delivered)
+            rt["login_expired_alert"] = alert
+
+    _mutate(account_id, update)
+
+
+def clear_login_expired_alert(account_id: str) -> None:
+    """仅在确认账号恢复登录后解除告警状态，使下次掉线可再次通知。"""
+    def update(rt: dict) -> None:
+        rt.pop("login_expired_alert", None)
+
+    _mutate(account_id, update)
 
 
 def recover_stale_running(account_id: str | None = None) -> bool:

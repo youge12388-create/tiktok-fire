@@ -15,12 +15,14 @@ router = APIRouter(prefix="/accounts/{account_id}/contacts", tags=["contacts"], 
 
 class SelectionBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    names: list[str]
+    names: list[str] = []
+    contact_keys: list[str] = []
 
 
 class DeleteBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    names: list[str]
+    names: list[str] = []
+    contact_keys: list[str] = []
 
 
 def _resolve(account_id: str) -> str:
@@ -37,12 +39,12 @@ def list_contacts(account_id: str):
 
 @router.put("/selection")
 def set_selection(account_id: str, body: SelectionBody):
-    return contact_service.set_selection(_resolve(account_id), body.names)
+    return contact_service.set_selection(_resolve(account_id), body.names, body.contact_keys)
 
 
 @router.post("/delete")
 def delete_selected(account_id: str, body: DeleteBody):
-    return contact_service.delete_contacts(_resolve(account_id), body.names)
+    return contact_service.delete_contacts(_resolve(account_id), body.names, body.contact_keys)
 
 
 @router.post("/sync")
