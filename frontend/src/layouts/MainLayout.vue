@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useTheme } from '@/composables/useTheme'
 import BrandFlameIcon from '@/components/BrandFlameIcon.vue'
+import DigitalWave from '@/components/login/DigitalWave.vue'
 import { ChatDotRound, Document, HomeFilled, Menu, Moon, Setting, Sunny, SwitchButton, Timer, User, UserFilled } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -94,14 +95,17 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
           <el-button text class="logout" @click="auth.logout()"><el-icon><SwitchButton /></el-icon><span>退出</span></el-button>
         </div>
       </header>
-      <main class="main-content"><router-view /></main>
+      <main class="main-content">
+        <DigitalWave class="workbench-wave" />
+        <div class="main-content__view"><router-view /></div>
+      </main>
     </div>
   </div>
 </template>
 
 <style scoped>
-.app-layout { display: flex; min-height: 100vh; background: var(--color-bg); }
-.sidebar { position: sticky; top: 0; display: flex; width: 240px; height: 100vh; flex: 0 0 240px; flex-direction: column; padding: 24px 16px; border-right: 1px solid var(--color-border); background: var(--color-sidebar); }
+.app-layout { position: relative; display: flex; min-height: 100vh; background: var(--color-bg); }
+.sidebar { position: sticky; z-index: 2; top: 0; display: flex; width: 240px; height: 100vh; flex: 0 0 240px; flex-direction: column; padding: 24px 16px; border-right: 1px solid var(--color-border); background: var(--color-sidebar); }
 .brand { display: flex; align-items: center; gap: 11px; padding: 2px 9px 28px; }
 .brand-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: var(--color-on-primary); background: var(--color-primary); }
 .brand-icon .el-icon { font-size: 19px; }
@@ -123,7 +127,8 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
 .sidebar-foot strong { font-size: 11px; font-weight: 650; }
 .sidebar-foot small { margin-top: 3px; color: var(--color-sidebar-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; letter-spacing: 0.08em; }
 .content-area { min-width: 0; flex: 1; }
-.topbar { position: sticky; z-index: 10; top: 0; display: flex; height: 72px; align-items: center; justify-content: space-between; padding: 0 36px; border-bottom: 1px solid var(--color-border); background: var(--color-topbar); }
+.workbench-wave { z-index: -1; --digital-wave-background: transparent; opacity: 0.84; }
+.topbar { position: sticky; z-index: 10; top: 0; display: flex; height: 72px; align-items: center; justify-content: space-between; padding: 0 36px; border-bottom: 1px solid var(--color-glass-border); background: var(--color-topbar); background-image: var(--color-glass-sheen); box-shadow: inset 0 1px 0 var(--color-glass-highlight), 0 10px 30px rgba(0, 0, 0, 0.08); }
 .topbar-title { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; }
 .user-area { display: flex; align-items: center; gap: 8px; }
 .theme-toggle { min-width: 68px; color: var(--color-text-secondary); }
@@ -134,7 +139,8 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
 .user-name { font-size: 12px; }
 .logout { margin-left: 4px; color: var(--color-text-secondary); }
 .logout:hover { color: var(--color-primary); }
-.main-content { min-height: calc(100vh - 72px); padding: 34px 36px 60px; }
+.main-content { position: relative; z-index: 1; isolation: isolate; min-height: calc(100vh - 72px); padding: 34px 36px 60px; }
+.main-content__view { position: relative; }
 .mobile-drawer :deep(.el-drawer__body) { padding: 0; }
 .mobile-menu { min-height: 100%; padding: 24px 16px; background: var(--color-sidebar); }
 .mobile-menu .brand { padding-bottom: 28px; }
