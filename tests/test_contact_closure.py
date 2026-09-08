@@ -106,6 +106,44 @@ def test_same_name_fallback_fingerprints_are_not_silently_merged(fresh_account):
     assert all(item["identity_ambiguous"] for item in contacts)
 
 
+def test_unique_legacy_name_entry_is_migrated_to_stable_contact_key(fresh_account):
+    ledger.set_selected(
+        [{"display_name": "待迁移", "contact_key": "name:待迁移", "selected": True, "selected_order": 0}],
+        fresh_account,
+    )
+
+    stats = ledger.merge_consumer_contacts(
+        [{"name": "待迁移", "streak": "8", "sync_key": "avatar:stable"}], fresh_account
+    )
+
+    contacts = contact_service.list_contacts(fresh_account)["contacts"]
+    assert stats["migrated"] == 1
+    assert len(contacts) == 1
+    assert contacts[0]["id"] == "sync:avatar:stable"
+    assert contacts[0]["selected"] is True
+    assert contacts[0]["identity_ambiguous"] is False
+
+
+def test_legacy_duplicate_is_removed_when_stable_contact_already_exists(fresh_account):
+    ledger.merge_consumer_contacts(
+        [{"name": "待清理", "streak": "8", "sync_key": "avatar:stable"}], fresh_account
+    )
+    ledger.set_selected(
+        [{"display_name": "待清理", "contact_key": "name:待清理", "selected": True, "selected_order": 0}],
+        fresh_account,
+    )
+
+    stats = ledger.merge_consumer_contacts(
+        [{"name": "待清理", "streak": "9", "sync_key": "avatar:stable"}], fresh_account
+    )
+
+    contacts = contact_service.list_contacts(fresh_account)["contacts"]
+    assert stats["migrated"] == 1
+    assert len(contacts) == 1
+    assert contacts[0]["id"] == "sync:avatar:stable"
+    assert contacts[0]["selected"] is True
+
+
 def test_api_selection_delete_and_autorun(client):
     client.post("/api/v1/auth/login", json={"username": "admin", "password": PWD})
 

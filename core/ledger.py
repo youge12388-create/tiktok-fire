@@ -150,15 +150,51 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
     """把 consumer 会话列表（fetch_chat_contacts 的 names 字段）upsert 进台账。
 
     只更新火花天数与会话存在性，不覆盖用户勾选与历史发送时间。
-    返回 {"added", "updated", "total"} 统计。
+    旧版本以 ``name:<显示名>`` 存储会话；新版本会使用会话/头像键。若一次
+    扫描中该显示名唯一，则把旧记录迁移到新键，保留原来的勾选和发送历史，避免
+    升级后把同一个联系人显示成两条。
+
+    返回 {"added", "updated", "migrated", "total"} 统计。
     """
     entries = load_ledger(account_id)
     added = 0
     updated = 0
+    migrated = 0
     by_key = {e.get("contact_key", f"name:{e.get('display_name', '')}"): e for e in entries}
     contacts = contacts or []
     contact_keys = [_consumer_contact_key(c) for c in contacts if str(c.get("name", "")).strip()]
     duplicate_keys = {key for key, count in Counter(contact_keys).items() if count > 1}
+    contact_name_counts = Counter(str(c.get("name", "")).strip() for c in contacts if str(c.get("name", "")).strip())
+
+    def _migrate_unique_legacy_entry(name: str, contact_key: str) -> bool:
+        """把唯一的旧名称键收敛到当前稳定键，绝不合并同名多会话。"""
+        if contact_key == f"name:{name}" or contact_name_counts[name] != 1:
+            return False
+        legacy_entries = [
+            entry for entry in entries
+            if entry.get("contact_key", f"name:{entry.get('display_name', '')}") == f"name:{name}"
+            and str(entry.get("display_name", "")).strip() == name
+        ]
+        if len(legacy_entries) != 1:
+            return False
+
+        legacy = legacy_entries[0]
+        current = by_key.get(contact_key)
+        if current is None:
+            legacy["contact_key"] = contact_key
+            by_key.pop(f"name:{name}", None)
+            by_key[contact_key] = legacy
+            return True
+
+        # 已存在稳定键时，删除遗留名称项；保留任何已选状态和发送历史。
+        current["selected"] = bool(current.get("selected")) or bool(legacy.get("selected"))
+        if current.get("selected_order") is None:
+            current["selected_order"] = legacy.get("selected_order")
+        current["last_sent_at"] = current.get("last_sent_at") or legacy.get("last_sent_at")
+        current.setdefault("source", {}).update(legacy.get("source") or {})
+        entries.remove(legacy)
+        by_key.pop(f"name:{name}", None)
+        return True
 
     def _resolve_avatar(c: dict) -> str:
         """并发下载头像；下载失败或为空时保留旧头像。"""
@@ -179,6 +215,8 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
         if not name:
             continue
         contact_key = _consumer_contact_key(c)
+        if _migrate_unique_legacy_entry(name, contact_key):
+            migrated += 1
         exists = contact_key in by_key
         old_avatar = (by_key.get(contact_key) or {}).get("avatar") or ""
         e = _upsert(entries, {
@@ -199,7 +237,7 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
             updated += 1
         else:
             added += 1
-    if added or updated:
+    if added or updated or migrated:
         # 当前发送定位仍依赖昵称；同名会话即使采集到唯一键也必须禁止自动发送。
         display_counts = Counter(str(e.get("display_name", "")).strip() for e in entries)
         for entry in entries:
@@ -208,7 +246,7 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
                 or entry.get("contact_key") in duplicate_keys
             )
         _save(entries, account_id)
-    return {"added": added, "updated": updated, "total": len(entries)}
+    return {"added": added, "updated": updated, "migrated": migrated, "total": len(entries)}
 
 
 @_locked
