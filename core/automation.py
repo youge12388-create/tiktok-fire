@@ -299,9 +299,6 @@ _EXTRACT_JS = """
             if (/^\\d{1,2}:\\d{2}$/.test(finalName)) return; // 时间
             if (finalName === '消息' || finalName === '私信' || finalName === '朋友私信' || finalName === '通知') return;
             if (finalName.length > 40) return;
-            if (seen.has(finalName)) return;
-            seen.add(finalName);
-
             // 火花天数：行内 commonStreak 容器（normalText 为数字）
             let streak = "";
             const st = row.querySelector('[class*="commonStreaknormalText"], [class*="commonStreakstreakContainer"]');
@@ -315,9 +312,31 @@ _EXTRACT_JS = """
                 if (!asrc.includes('flame_icon')) avatar = asrc;
             }
 
+            // 部分页面在会话节点或链接中提供稳定会话 ID；优先保留，解决同昵称被静默合并。
+            let conversationId = "";
+            const idSelectors = [
+                'data-conversation-id', 'data-conversationid', 'data-chat-id', 'data-chatid', 'data-im-id'
+            ];
+            for (const attr of idSelectors) {
+                const value = row.getAttribute(attr) || row.closest('[' + attr + ']')?.getAttribute(attr);
+                if (value && value.length <= 160) { conversationId = value.trim(); break; }
+            }
+            if (!conversationId) {
+                const href = row.querySelector('a[href]')?.getAttribute('href') || '';
+                const match = href.match(/[?&](?:conversation_id|conversationId|chat_id)=([^&#]+)/);
+                if (match) conversationId = decodeURIComponent(match[1]);
+            }
+            // 旧页面未暴露会话 ID 时，用去掉临时签名的头像路径做降级指纹；
+            // 它只用于保留列表中的同名项，发送仍按同名风险禁止自动执行。
+            let avatarFingerprint = avatar;
+            try { avatarFingerprint = new URL(avatar).origin + new URL(avatar).pathname; } catch (e) {}
+            const rowKey = conversationId || ('fallback:' + finalName + '|avatar:' + avatarFingerprint);
+            if (seen.has(rowKey)) return;
+            seen.add(rowKey);
+
             // 只同步带火花的会话。普通私信、系统通知不应出现在续火名单中。
             if (!streak) return;
-            out.push({ name: finalName, streak: streak, avatar: avatar });
+            out.push({ name: finalName, streak: streak, avatar: avatar, conversation_id: conversationId, sync_key: rowKey });
         });
 
         // 虚拟列表的真正滚动容器通常是会话行的祖先，不能只依赖不稳定的 class 名。
@@ -379,45 +398,61 @@ def _open_chat_page(page) -> bool:
     return False
 
 
-def _scroll_and_extract(page, collected: list[dict], max_rounds: int = 80) -> None:
+def _scroll_and_extract(page, collected: list[dict], max_rounds: int = 120) -> dict:
     """滚动聊天列表并提取联系人，直到没有新数据或列表触底。
 
-    列表为虚拟滚动，步长过大会跳过部分行导致火花遗漏，故小步快滚。
-    每轮只等待 DOM 增量渲染，触底或连续两轮无新数据即提前结束。
+    列表为虚拟滚动，步长过大会跳过部分行导致火花遗漏，故小步滚动。
+    只有明确触底才标记完整；渲染迟缓、滚动失效、到达轮次上限均作为不完整结果反馈。
     """
     stable = 0
-    seen_names = {str(item.get("name", "")) for item in collected}
-    for _ in range(max_rounds):
+    seen_keys = {
+        str(item.get("conversation_id") or item.get("sync_key") or f"name:{item.get('name', '')}")
+        for item in collected
+    }
+    for round_no in range(1, max_rounds + 1):
         res = page.evaluate(_EXTRACT_JS) or {}
         data = res.get("items") or []
-        new_items = [x for x in data if x.get("streak") and x.get("name") not in seen_names]
+        new_items = [
+            x for x in data
+            if x.get("streak") and x.get("name")
+            and str(x.get("conversation_id") or x.get("sync_key") or f"name:{x.get('name', '')}") not in seen_keys
+        ]
         if new_items:
             collected.extend(new_items)
-            seen_names.update(str(item["name"]) for item in new_items)
+            seen_keys.update(
+                str(item.get("conversation_id") or item.get("sync_key") or f"name:{item.get('name', '')}")
+                for item in new_items
+            )
             stable = 0
         else:
             stable += 1
-            if stable >= 4 or res.get("atBottom"):
-                break
         if res.get("atBottom"):
-            break
+            return {"complete": True, "rounds": round_no, "stop_reason": "bottom_reached"}
+        # 虚拟列表偶尔需要多个帧才更新；连续空白不再伪装成已完成。
+        if stable >= 8:
+            return {"complete": False, "rounds": round_no, "stop_reason": "no_new_rows"}
         try:
             moved = page.evaluate(_SCROLL_CHAT_LIST_JS)
             if not moved:
-                break
+                return {"complete": False, "rounds": round_no, "stop_reason": "scroll_stalled"}
         except Exception:
             logger.info("聊天列表滚动失败，停止同步")
-            break
-        page.wait_for_timeout(500)
+            return {"complete": False, "rounds": round_no, "stop_reason": "scroll_error"}
+        page.wait_for_timeout(800)
+    return {"complete": False, "rounds": max_rounds, "stop_reason": "round_limit"}
 
 
 def fetch_chat_contacts(account_id: str | None = None) -> dict:
     """从抖音私信页左侧聊天列表读取联系人（含火花天数），供网页端勾选。"""
     aid = account_id or DEFAULT_ACCOUNT_ID
-    result = {"at": _now(), "names": [], "error": None}
+    result = {
+        "at": _now(), "names": [], "error": None, "logged_out": False,
+        "complete": False, "scan_rounds": 0, "stop_reason": "not_started",
+    }
     state = get_valid_state_path(aid)
     if state is None:
         result["error"] = "该账号尚未上传登录态 state.json"
+        result["logged_out"] = True
         return result
 
     try:
@@ -430,27 +465,37 @@ def fetch_chat_contacts(account_id: str | None = None) -> dict:
             logged, why = check_login(page)
             if not logged:
                 result["error"] = why
+                result["logged_out"] = True
                 return result
 
             collected: list[dict] = []
+            scan = {"complete": False, "rounds": 0, "stop_reason": "not_started"}
             for attempt in range(3):
                 try:
                     page.wait_for_selector(".conversationConversationItemtitle", timeout=45000)
                 except Exception:
                     logger.info("第 %s 次等待联系人列表超时", attempt + 1)
 
-                _scroll_and_extract(page, collected)
+                scan = _scroll_and_extract(page, collected)
 
-                if collected:
+                if scan["complete"]:
                     break
                 try:
                     page.reload(wait_until="domcontentloaded", timeout=90000)
-                    page.wait_for_timeout(12000)
+                    page.wait_for_timeout(3000)
                 except Exception:
-                    pass
+                    break
 
             result["names"] = collected
-            logger.info("已读取聊天列表联系人 %s 个", len(result["names"]))
+            result["complete"] = bool(scan["complete"])
+            result["scan_rounds"] = int(scan["rounds"])
+            result["stop_reason"] = str(scan["stop_reason"])
+            if not result["complete"]:
+                result["warning"] = "会话列表未确认滚动到底，请稍后重试；当前名单可能不完整"
+            logger.info(
+                "已读取聊天列表联系人 %s 个，complete=%s，reason=%s",
+                len(result["names"]), result["complete"], result["stop_reason"],
+            )
     except Exception as e:
         logger.error("获取联系人异常: %s", e)
         result["error"] = f"获取联系人异常: {e}"
@@ -580,6 +625,7 @@ def run_send(dry_run: bool = False, only_names: list[str] | None = None, account
 
     state = get_valid_state_path(aid)
     if state is None:
+        result["logged_out"] = True
         result["failed"].append({"name": "_system", "reason": "该账号尚未上传登录态 state.json"})
         return result
 

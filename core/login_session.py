@@ -30,7 +30,7 @@ from playwright.sync_api import sync_playwright
 
 from .accounts import acquire_browser_slot, release_browser_slot
 from .config import DEFAULT_ACCOUNT_ID, ROOT_STATE_PATH, account_state_path
-from .runtime import update_runtime
+from .runtime import clear_login_expired_alert, update_runtime
 from .selectors import (
     LOGIN_TAB_TEXT,
     QR_CLICK_CANDIDATES,
@@ -276,6 +276,7 @@ def _update_nickname_if_current(aid: str, session_id: str, nickname: str) -> boo
         if nickname:
             fields["douyin_nickname"] = nickname
         update_runtime(aid, **fields)
+        clear_login_expired_alert(aid)
         return bool(nickname)
 
 

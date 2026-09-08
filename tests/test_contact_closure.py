@@ -74,6 +74,38 @@ def test_duplicate_display_names_are_marked_ambiguous_and_not_pending(fresh_acco
     assert automation.compute_pending(account_id=fresh_account) == []
 
 
+def test_distinct_conversation_ids_keep_same_name_as_separate_safe_records(fresh_account):
+    ledger.merge_consumer_contacts(
+        [
+            {"name": "同名", "streak": "5", "conversation_id": "conversation-a"},
+            {"name": "同名", "streak": "6", "conversation_id": "conversation-b"},
+        ],
+        fresh_account,
+    )
+
+    contacts = contact_service.list_contacts(fresh_account)["contacts"]
+    assert {item["id"] for item in contacts} == {"conversation:conversation-a", "conversation:conversation-b"}
+    assert all(item["identity_ambiguous"] for item in contacts)
+
+    removed = contact_service.delete_contacts(fresh_account, [], ["conversation:conversation-a"])
+    assert removed["removed"] == 1
+    assert [item["id"] for item in contact_service.list_contacts(fresh_account)["contacts"]] == ["conversation:conversation-b"]
+
+
+def test_same_name_fallback_fingerprints_are_not_silently_merged(fresh_account):
+    ledger.merge_consumer_contacts(
+        [
+            {"name": "同名", "streak": "5", "sync_key": "fallback:同名|avatar:a"},
+            {"name": "同名", "streak": "6", "sync_key": "fallback:同名|avatar:b"},
+        ],
+        fresh_account,
+    )
+
+    contacts = contact_service.list_contacts(fresh_account)["contacts"]
+    assert len(contacts) == 2
+    assert all(item["identity_ambiguous"] for item in contacts)
+
+
 def test_api_selection_delete_and_autorun(client):
     client.post("/api/v1/auth/login", json={"username": "admin", "password": PWD})
 

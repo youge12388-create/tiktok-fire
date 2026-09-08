@@ -34,6 +34,11 @@ SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip()
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").strip().lower() in {"1", "true", "yes", "on"}
 SESSION_MAX_AGE = int(os.getenv("SESSION_MAX_AGE", str(7 * 24 * 3600)))
 
+# 钉钉自定义机器人（可选）。两个值缺一不可；未配置时通知功能保持禁用。
+# 密钥只从运行环境读取，绝不能写入代码、日志或接口响应。
+DINGTALK_WEBHOOK_URL = os.getenv("DINGTALK_WEBHOOK_URL", "").strip()
+DINGTALK_SECRET = os.getenv("DINGTALK_SECRET", "").strip()
+
 
 def _normalize_public_base_path(value: str) -> str:
     """规范化可选的反向代理挂载前缀；根路径统一用空串表示。"""

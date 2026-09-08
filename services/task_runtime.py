@@ -12,6 +12,7 @@ from core.runtime import load_runtime, set_running, update_runtime
 from . import run_service
 from .contact_service import sync_contacts
 from .douyin import douyin
+from .notification_service import report_session_expired
 from .state import acquire_lock, contacts_fetching, harvesting, lock_for
 
 logger = logging.getLogger("douyin-cloud-streak")
@@ -128,6 +129,11 @@ def _run_worker(
         persisted = True
         try:
             run_service.record_run(result, account_id, task_type="dry_run" if dry else "spark", run_id=run_id)
+            if result.get("logged_out"):
+                report_session_expired(
+                    account_id,
+                    str(next((item.get("reason") for item in result.get("failed", []) if isinstance(item, dict) and item.get("name") == "_system"), "发送任务检测到登录态失效")),
+                )
         except Exception as exc:  # noqa: BLE001
             persisted = False
             logger.exception("[%s] 运行结果落库失败（run_id=%s）", account_id, run_id)

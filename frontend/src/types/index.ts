@@ -29,6 +29,7 @@ export interface ScanStatus {
 }
 
 export interface Contact {
+  id: string
   name: string
   streak?: string
   avatar?: string
