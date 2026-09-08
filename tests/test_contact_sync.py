@@ -46,4 +46,14 @@ def test_contact_sync_reports_incomplete_when_scrolling_stalls():
     status = automation._scroll_and_extract(_StalledContactPage(), collected)
 
     assert [item["name"] for item in collected] == ["有火花"]
-    assert status == {"complete": False, "rounds": 1, "stop_reason": "scroll_stalled"}
+    assert status == {"complete": False, "rounds": 3, "stop_reason": "scroll_stalled"}
+
+
+def test_contact_scan_uses_consistent_largest_scroll_container_strategy():
+    # 两段浏览器脚本必须使用同一套容器选择规则，否则提取和滚动可能针对不同
+    # 元素，导致列表看似到底但仍遗漏虚拟列表中的联系人。
+    assert "const candidates = []" in automation._EXTRACT_JS
+    assert "const candidates = []" in automation._SCROLL_CHAT_LIST_JS
+    assert "candidates.sort" in automation._EXTRACT_JS
+    assert "candidates.sort" in automation._SCROLL_CHAT_LIST_JS
+    assert "conversationList" in automation._SCROLL_CHAT_LIST_JS

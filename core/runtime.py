@@ -116,6 +116,7 @@ def record_contacts(data: dict, account_id: str | None = None) -> None:
         rt["contacts_complete"] = bool(data.get("complete"))
         rt["contacts_scan_rounds"] = int(data.get("scan_rounds") or 0)
         rt["contacts_stop_reason"] = data.get("stop_reason") or ""
+        rt["contacts_scan_mode"] = data.get("scan_mode") or "initial"
 
     _mutate(account_id, update)
 

@@ -193,7 +193,9 @@ def _scheduled_run(account_id: str, only_names: list[str] | None = None) -> None
         logger.exception("[%s] 定时任务触发失败: %s", account_id, exc)
 
 
-def start_fetch_contacts(account_id: str) -> bool:
+def start_fetch_contacts(account_id: str, mode: str = "initial") -> bool:
+    if mode not in {"initial", "supplement"}:
+        raise ValueError("联系人同步 mode 必须是 initial 或 supplement")
     _ensure_account_enabled(account_id)
     if not acquire_lock(account_id):
         raise RuntimeError("该账号已有任务在运行，请稍后再试")
@@ -203,18 +205,18 @@ def start_fetch_contacts(account_id: str) -> bool:
         lock_for(account_id).release()
         raise
     try:
-        threading.Thread(target=_contacts_worker, args=(account_id,), daemon=True).start()
+        threading.Thread(target=_contacts_worker, args=(account_id, mode), daemon=True).start()
         return True
     except Exception:
         lock_for(account_id).release()
         raise
 
 
-def _contacts_worker(account_id: str) -> None:
+def _contacts_worker(account_id: str, mode: str = "initial") -> None:
     try:
         contacts_fetching.add(account_id)
         try:
-            sync_contacts(account_id)
+            sync_contacts(account_id, mode=mode)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[%s] 联系人同步异常: %s", account_id, exc)
             try:

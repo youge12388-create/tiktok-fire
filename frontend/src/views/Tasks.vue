@@ -232,7 +232,7 @@ onMounted(loadAccounts)
 .range-field .el-input-number { width: 120px; }
 .message-section :deep(.el-textarea__inner) { line-height: 1.7; resize: vertical; }
 .message-count { display: block; margin-top: 7px; color: var(--color-text-secondary); font-size: 10px; text-align: right; }
-.form-actions { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 24px; border-top: 1px solid var(--color-border); background: var(--color-surface-muted); }
+.form-actions { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 24px; border-top: 1px solid var(--color-border); background: var(--color-surface-glass-muted); }
 .form-actions > span { color: var(--color-text-secondary); font-size: 11px; }
 .form-actions > div { display: flex; gap: 8px; }
 

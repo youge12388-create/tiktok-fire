@@ -271,7 +271,7 @@ onMounted(() => {
 
 .detail-panel {
   padding: 16px 20px 20px 56px;
-  background: var(--color-bg);
+  background: var(--color-surface-glass-muted);
 }
 
 .detail-heading {

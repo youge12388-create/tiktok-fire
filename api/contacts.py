@@ -47,11 +47,29 @@ def delete_selected(account_id: str, body: DeleteBody):
     return contact_service.delete_contacts(_resolve(account_id), body.names, body.contact_keys)
 
 
-@router.post("/sync")
-def sync_contacts(account_id: str):
+def _start_sync(account_id: str, mode: str):
     aid = _resolve(account_id)
+    if mode not in {"initial", "supplement"}:
+        raise HTTPException(status_code=422, detail="联系人同步 mode 必须是 initial 或 supplement")
     try:
-        started = start_fetch_contacts(aid)
+        started = start_fetch_contacts(aid, mode=mode)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return {"ok": True, "started": started}
+    return {"ok": True, "started": started, "mode": mode}
+
+
+@router.post("/sync")
+def sync_contacts(account_id: str, mode: str = "initial"):
+    """启动一次同步；mode=supplement 用于继续上次未完成的扫描。"""
+    return _start_sync(account_id, mode)
+
+
+@router.post("/sync/continue")
+def continue_sync_contacts(account_id: str):
+    """启动一趟补充扫描，保留已有结果并合并新联系人。"""
+    return _start_sync(account_id, "supplement")
+
+
+@router.post("/delete-all")
+def delete_all_contacts(account_id: str):
+    return contact_service.delete_all_contacts(_resolve(account_id))

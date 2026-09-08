@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, Refresh, Search, UserFilled } from '@element-plus/icons-vue'
 import { listAccounts } from '@/api/accounts'
 import { withAppBasePath } from '@/api/base'
-import { deleteContacts, listContacts, setContactsSelection, syncContacts } from '@/api/contacts'
+import { continueSyncContacts, deleteAllContacts, deleteContacts, listContacts, setContactsSelection, syncContacts } from '@/api/contacts'
 import { getErrorMessage } from '@/api/errors'
 import type { Account, Contact } from '@/types'
 
@@ -16,8 +16,9 @@ const contacts = ref<CheckableContact[]>([])
 const keyword = ref('')
 const loading = ref(false)
 const syncing = ref(false)
+const deletingAll = ref(false)
 const selectionSaving = ref(false)
-const syncSummary = ref<{ complete?: boolean; rounds?: number; warning?: string | null }>({})
+const syncSummary = ref<{ complete?: boolean | null; warning?: string | null }>({})
 let timer: number | undefined
 let contactsRequestId = 0
 
@@ -32,13 +33,13 @@ const filtered = computed(() => {
   if (!search) return contacts.value
   return contacts.value.filter((contact) => (contact.name || '').toLowerCase().includes(search))
 })
-const selectedCount = computed(() => contacts.value.filter((contact) => contact.checked && !contact.identity_ambiguous).length)
+const selectedCount = computed(() => contacts.value.filter((contact) => contact.checked).length)
 const syncStatus = computed(() => {
-  if (!syncSummary.value.rounds) return ''
-  return syncSummary.value.complete
-    ? ` · 已完整扫描 ${syncSummary.value.rounds} 轮`
-    : ` · 同步未确认完整（${syncSummary.value.rounds} 轮）`
+  if (syncSummary.value.complete === true) return ' · 已完整同步'
+  if (syncSummary.value.complete === false) return ' · 同步未确认完整，可继续补充扫描'
+  return ''
 })
+const needsSupplement = computed(() => Boolean(canSync.value && syncSummary.value.complete === false))
 
 function accountStatus(account?: Account) {
   if (!account) return { label: '未选择', type: 'info' }
@@ -72,11 +73,10 @@ async function loadContacts(requestedAccountId = accountId.value) {
     if (requestId !== contactsRequestId || accountId.value !== requestedAccountId) return
     contacts.value = (data.contacts || []).map((contact) => ({
       ...contact,
-      checked: !!contact.selected && !contact.identity_ambiguous
+      checked: !!contact.selected
     }))
     syncSummary.value = {
       complete: data.contacts_complete,
-      rounds: data.contacts_scan_rounds,
       warning: data.contacts_warning
     }
     if (data.contacts_error) ElMessage.warning(data.contacts_error)
@@ -89,7 +89,7 @@ async function loadContacts(requestedAccountId = accountId.value) {
   }
 }
 
-async function doSync() {
+async function doSync(mode: 'initial' | 'supplement' = 'initial') {
   if (!canSync.value) {
     ElMessage.warning('请先完成账号登录')
     return
@@ -97,10 +97,11 @@ async function doSync() {
   const syncAccountId = accountId.value
   syncing.value = true
   try {
-    await syncContacts(syncAccountId)
+    if (mode === 'supplement') await continueSyncContacts(syncAccountId)
+    else await syncContacts(syncAccountId)
     if (accountId.value !== syncAccountId) return
-    ElMessage.success('正在同步联系人')
-    startPolling(syncAccountId)
+    ElMessage.success(mode === 'supplement' ? '正在补充扫描联系人' : '正在同步联系人')
+    startPolling(syncAccountId, mode)
   } catch (error: unknown) {
     if (accountId.value !== syncAccountId) return
     ElMessage.error(getErrorMessage(error, '联系人同步失败'))
@@ -108,7 +109,7 @@ async function doSync() {
   }
 }
 
-function startPolling(pollingAccountId: string) {
+function startPolling(pollingAccountId: string, mode: 'initial' | 'supplement') {
   stopPolling()
   let attempts = 0
   timer = window.setInterval(async () => {
@@ -127,7 +128,9 @@ function startPolling(pollingAccountId: string) {
         await loadContacts(pollingAccountId)
         if (accountId.value !== pollingAccountId) return
         if (data.contacts_complete === false) {
-          ElMessage.warning('同步结束但未确认完整，请稍后重试并查看同步状态')
+          ElMessage.warning(mode === 'supplement'
+            ? '补充扫描结束但仍未确认完整，已保留结果，可继续补充扫描'
+            : '同步结束但未确认完整，已保留结果，可继续补充扫描')
         } else {
           ElMessage.success('联系人同步完成')
         }
@@ -153,14 +156,14 @@ function stopPolling() {
 }
 
 async function saveSelection() {
-  if (!accountId.value) return
+  if (!accountId.value || syncing.value || deletingAll.value) return
   selectionSaving.value = true
   try {
     const names = contacts.value
-      .filter((contact) => contact.checked && !contact.identity_ambiguous)
+      .filter((contact) => contact.checked)
       .map((contact) => contact.name)
     const contactKeys = contacts.value
-      .filter((contact) => contact.checked && !contact.identity_ambiguous)
+      .filter((contact) => contact.checked)
       .map((contact) => contact.id)
     await setContactsSelection(accountId.value, names, contactKeys)
   } catch (error: unknown) {
@@ -172,9 +175,7 @@ async function saveSelection() {
 }
 
 async function selectAll() {
-  contacts.value.forEach((contact) => {
-    if (!contact.identity_ambiguous) contact.checked = true
-  })
+  contacts.value.forEach((contact) => (contact.checked = true))
   await saveSelection()
 }
 
@@ -184,7 +185,7 @@ async function clearAll() {
 }
 
 async function removeContact(contact: Contact) {
-  if (!accountId.value) return
+  if (!accountId.value || syncing.value || deletingAll.value) return
   try {
     await ElMessageBox.confirm(
       `确认删除联系人「${contact.name}」？删除后将不再参与自动续火花。`,
@@ -203,6 +204,29 @@ async function removeContact(contact: Contact) {
   }
 }
 
+async function removeAllContacts() {
+  if (!accountId.value || !contacts.value.length || syncing.value || deletingAll.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除当前账号下的全部 ${contacts.value.length} 位联系人？删除后将不再参与自动续火花。`,
+      '删除全部联系人',
+      { type: 'warning', confirmButtonText: '全部删除', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  deletingAll.value = true
+  try {
+    const { data } = await deleteAllContacts(accountId.value)
+    ElMessage.success(`已删除 ${data.removed ?? contacts.value.length} 位联系人`)
+    await loadContacts()
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '全部联系人删除失败'))
+  } finally {
+    deletingAll.value = false
+  }
+}
+
 watch(accountId, (nextAccountId) => {
   stopPolling()
   syncing.value = false
@@ -216,7 +240,10 @@ onUnmounted(stopPolling)
   <div class="page">
     <div class="page-header">
       <div><h1 class="page-title">联系人</h1><p class="page-description">同步抖音会话，并勾选需要自动续火的联系人。</p></div>
-      <div class="page-actions"><el-button type="primary" :icon="Refresh" :loading="syncing" :disabled="!canSync" @click="doSync">同步联系人</el-button></div>
+      <div class="page-actions">
+        <el-button v-if="needsSupplement" type="primary" :icon="Refresh" :loading="syncing" :disabled="!canSync" @click="doSync('supplement')">继续补充扫描</el-button>
+        <el-button :type="needsSupplement ? 'default' : 'primary'" :icon="Refresh" :loading="syncing" :disabled="!canSync" @click="doSync('initial')">{{ needsSupplement ? '重新同步' : '同步联系人' }}</el-button>
+      </div>
     </div>
 
     <section class="surface">
@@ -228,21 +255,21 @@ onUnmounted(stopPolling)
 
       <div class="section-header">
         <div><h2 class="section-title">续火联系人</h2><p class="section-description">已选 {{ selectedCount }} / {{ contacts.length }}{{ selectionSaving ? ' · 正在保存' : '' }}{{ syncStatus }}</p></div>
-        <div class="bulk-actions"><el-button text size="small" :disabled="!contacts.length || selectionSaving" @click="selectAll">全选</el-button><el-button text size="small" :disabled="!contacts.length || selectionSaving" @click="clearAll">清空</el-button></div>
+        <div class="bulk-actions"><el-button text size="small" :disabled="!contacts.length || selectionSaving || syncing || deletingAll" @click="selectAll">全选</el-button><el-button text size="small" :disabled="!contacts.length || selectionSaving || syncing || deletingAll" @click="clearAll">清空</el-button><el-button text type="danger" size="small" :loading="deletingAll" :disabled="!contacts.length || selectionSaving || syncing" @click="removeAllContacts">删除全部</el-button></div>
       </div>
 
       <el-skeleton v-if="loading" :rows="6" animated class="loading-block" />
       <el-table v-else-if="filtered.length" :data="filtered">
-        <el-table-column width="54"><template #default="{ row }"><el-checkbox v-model="row.checked" :disabled="selectionSaving || row.identity_ambiguous" :title="row.identity_ambiguous ? '同名联系人需先确认唯一会话' : undefined" aria-label="选择联系人" @change="saveSelection" /></template></el-table-column>
+        <el-table-column width="54"><template #default="{ row }"><el-checkbox v-model="row.checked" :disabled="selectionSaving || syncing || deletingAll" aria-label="选择联系人" @change="saveSelection" /></template></el-table-column>
         <el-table-column width="60"><template #default="{ row }"><el-avatar :size="36" :src="row.avatar ? withAppBasePath(row.avatar) : undefined"><el-icon><UserFilled /></el-icon></el-avatar></template></el-table-column>
         <el-table-column prop="name" label="联系人" min-width="180" />
         <el-table-column label="火花" width="120"><template #default="{ row }">{{ row.streak || '—' }}</template></el-table-column>
-        <el-table-column label="任务状态" width="130"><template #default="{ row }"><el-tag v-if="row.identity_ambiguous" type="warning" size="small">同名待确认</el-tag><el-tag v-else-if="row.checked" type="success" size="small">已加入</el-tag><span v-else class="muted-state">未选择</span></template></el-table-column>
-        <el-table-column label="操作" width="72" align="center"><template #default="{ row }"><el-button text type="danger" :icon="Delete" aria-label="删除联系人" :disabled="selectionSaving" @click="removeContact(row)" /></template></el-table-column>
+        <el-table-column label="任务状态" width="130"><template #default="{ row }"><el-tag v-if="row.checked" type="success" size="small">已加入</el-tag><span v-else class="muted-state">未选择</span></template></el-table-column>
+        <el-table-column label="操作" width="72" align="center"><template #default="{ row }"><el-button text type="danger" :icon="Delete" aria-label="删除联系人" :disabled="selectionSaving || syncing || deletingAll" @click="removeContact(row)" /></template></el-table-column>
       </el-table>
 
       <div v-else-if="!accountId" class="empty-panel"><el-icon><UserFilled /></el-icon><h3>请先选择账号</h3><p>选择一个已登录的账号后，可以同步联系人。</p><el-button @click="$router.push('/accounts')">去账号管理</el-button></div>
-      <div v-else-if="!contacts.length" class="empty-panel"><el-icon><UserFilled /></el-icon><h3>还没有联系人</h3><p>{{ canSync ? '点击“同步联系人”获取抖音会话列表。' : '当前账号未登录，请先去账号管理完成登录。' }}</p><el-button v-if="canSync" type="primary" :icon="Refresh" @click="doSync">同步联系人</el-button><el-button v-else @click="$router.push('/accounts')">去登录账号</el-button></div>
+      <div v-else-if="!contacts.length" class="empty-panel"><el-icon><UserFilled /></el-icon><h3>还没有联系人</h3><p>{{ canSync ? (needsSupplement ? '本次扫描未确认完整，可以继续补充扫描。' : '点击“同步联系人”获取抖音会话列表。') : '当前账号未登录，请先去账号管理完成登录。' }}</p><div v-if="canSync" class="empty-actions"><el-button v-if="needsSupplement" type="primary" :icon="Refresh" @click="doSync('supplement')">继续补充扫描</el-button><el-button :type="needsSupplement ? 'default' : 'primary'" :icon="Refresh" @click="doSync('initial')">{{ needsSupplement ? '重新同步' : '同步联系人' }}</el-button></div><el-button v-else @click="$router.push('/accounts')">去登录账号</el-button></div>
       <div v-else class="empty-panel search-empty"><el-icon><Search /></el-icon><h3>没有找到联系人</h3><p>请更换关键词后重试。</p><el-button @click="keyword = ''">清除搜索</el-button></div>
     </section>
   </div>
@@ -252,6 +279,7 @@ onUnmounted(stopPolling)
 .account-field { width: 220px; }
 .search-field { width: 220px; margin-left: auto; }
 .bulk-actions { display: flex; gap: 2px; }
+.empty-actions { display: flex; gap: 8px; }
 .loading-block { padding: 24px 20px; }
 .muted-state { color: var(--color-text-secondary); font-size: 11px; }
 .search-empty { min-height: 220px; }

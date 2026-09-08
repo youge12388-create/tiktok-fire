@@ -154,26 +154,82 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
     扫描中该显示名唯一，则把旧记录迁移到新键，保留原来的勾选和发送历史，避免
     升级后把同一个联系人显示成两条。
 
-    返回 {"added", "updated", "migrated", "total"} 统计。
+    同一趟扫描出现多个相同显示名时，整组丢弃，不再创建「同名待确认」记录。
+    已存在的真实同名历史记录也会在本次有有效扫描结果时清理；单个旧的
+    ``name:<name>`` 兼容项与一个稳定键并存则按迁移场景处理，不误删真实联系人。
+
+    返回 {"added", "updated", "migrated", "removed_duplicates", "duplicate_names", "total"}。
     """
     entries = load_ledger(account_id)
     added = 0
     updated = 0
     migrated = 0
+    contacts = [c for c in (contacts or []) if isinstance(c, dict)]
+    prepared: list[tuple[dict, str, str]] = []
+    for contact in contacts:
+        name = str(contact.get("name", "")).strip()
+        if name:
+            prepared.append((contact, name, _norm_ws(name)))
+
+    # 空结果可能是登录失效或页面尚未加载，不要因为一次失败把已有台账清空。
+    if not prepared:
+        return {
+            "added": 0,
+            "updated": 0,
+            "migrated": 0,
+            "removed_duplicates": 0,
+            "duplicate_names": [],
+            "total": len(entries),
+        }
+
+    current_name_counts = Counter(norm for _contact, _name, norm in prepared)
+    duplicate_norms = {
+        norm for norm, count in current_name_counts.items() if count > 1
+    }
+
+    # 清理真正的历史同名记录。只有「旧 name 键 + 一个稳定键」的组合视为
+    # 可迁移遗留数据，交给 _migrate_unique_legacy_entry 保留勾选/发送历史。
+    historical_groups: dict[str, list[dict]] = {}
+    for entry in entries:
+        historical_groups.setdefault(_norm_ws(entry.get("display_name")), []).append(entry)
+    historical_duplicate_norms: set[str] = set()
+    for norm, group in historical_groups.items():
+        if len(group) < 2:
+            continue
+        stable = [
+            entry for entry in group
+            if str(entry.get("contact_key") or f"name:{entry.get('display_name', '')}")
+            != f"name:{entry.get('display_name', '')}"
+        ]
+        if len(stable) != 1 or len(group) != 2:
+            historical_duplicate_norms.add(norm)
+
+    blocked_norms = duplicate_norms | historical_duplicate_norms
+    duplicate_names = sorted(blocked_norms)
+    before_cleanup = len(entries)
+    if blocked_norms:
+        entries = [
+            entry for entry in entries
+            if _norm_ws(entry.get("display_name")) not in blocked_norms
+        ]
+    removed_duplicates = before_cleanup - len(entries)
+
+    # 当前扫描中的同名整组不入库；不同会话键也不再制造多条同名记录。
+    accepted: list[tuple[dict, str, str]] = [
+        item for item in prepared if item[2] not in blocked_norms
+    ]
     by_key = {e.get("contact_key", f"name:{e.get('display_name', '')}"): e for e in entries}
-    contacts = contacts or []
-    contact_keys = [_consumer_contact_key(c) for c in contacts if str(c.get("name", "")).strip()]
-    duplicate_keys = {key for key, count in Counter(contact_keys).items() if count > 1}
-    contact_name_counts = Counter(str(c.get("name", "")).strip() for c in contacts if str(c.get("name", "")).strip())
+    contact_name_counts = Counter(norm for _contact, _name, norm in accepted)
 
     def _migrate_unique_legacy_entry(name: str, contact_key: str) -> bool:
         """把唯一的旧名称键收敛到当前稳定键，绝不合并同名多会话。"""
-        if contact_key == f"name:{name}" or contact_name_counts[name] != 1:
+        normalized_name = _norm_ws(name)
+        if contact_key == f"name:{name}" or contact_name_counts[normalized_name] != 1:
             return False
         legacy_entries = [
             entry for entry in entries
             if entry.get("contact_key", f"name:{entry.get('display_name', '')}") == f"name:{name}"
-            and str(entry.get("display_name", "")).strip() == name
+            and _norm_ws(entry.get("display_name", "")) == normalized_name
         ]
         if len(legacy_entries) != 1:
             return False
@@ -207,10 +263,11 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
         old = by_key.get(_consumer_contact_key(c))
         return (old.get("avatar") or "") if old else ""
 
+    accepted_contacts = [contact for contact, _name, _norm in accepted]
     with ThreadPoolExecutor(max_workers=8) as pool:
-        avatar_paths = list(pool.map(_resolve_avatar, contacts))
+        avatar_paths = list(pool.map(_resolve_avatar, accepted_contacts))
 
-    for c, avatar_path in zip(contacts, avatar_paths):
+    for c, avatar_path in zip(accepted_contacts, avatar_paths):
         name = str(c.get("name", "")).strip()
         if not name:
             continue
@@ -226,7 +283,7 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
             "has_conversation": True,
             "channel": "consumer",
             "avatar": avatar_path or old_avatar,
-            "identity_ambiguous": contact_key in duplicate_keys,
+            "identity_ambiguous": False,
         })
         e.setdefault("source", {})["consumer"] = True
         by_key[contact_key] = e
@@ -237,16 +294,21 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
             updated += 1
         else:
             added += 1
-    if added or updated or migrated:
-        # 当前发送定位仍依赖昵称；同名会话即使采集到唯一键也必须禁止自动发送。
-        display_counts = Counter(str(e.get("display_name", "")).strip() for e in entries)
+    if added or updated or migrated or removed_duplicates:
+        # 同名记录已在上面整组过滤；清掉旧版本遗留的 ambiguous 标记，
+        # 让前端不再出现「同名待确认」状态。
         for entry in entries:
-            entry["identity_ambiguous"] = (
-                display_counts.get(str(entry.get("display_name", "")).strip(), 0) > 1
-                or entry.get("contact_key") in duplicate_keys
-            )
+            if entry.get("source", {}).get("consumer"):
+                entry["identity_ambiguous"] = False
         _save(entries, account_id)
-    return {"added": added, "updated": updated, "migrated": migrated, "total": len(entries)}
+    return {
+        "added": added,
+        "updated": updated,
+        "migrated": migrated,
+        "removed_duplicates": removed_duplicates,
+        "duplicate_names": duplicate_names,
+        "total": len(entries),
+    }
 
 
 @_locked
@@ -518,6 +580,16 @@ def remove_contacts(
     if removed:
         _save(entries, account_id)
     return {"removed": removed, "total": len(entries)}
+
+
+@_locked
+def remove_all_contacts(account_id: str | None = None) -> dict:
+    """清空该账号全部联系人台账，返回删除数量。"""
+    entries = load_ledger(account_id)
+    removed = len(entries)
+    if removed:
+        _save([], account_id)
+    return {"removed": removed, "total": 0}
 
 
 def stats(account_id: str | None = None) -> dict:
