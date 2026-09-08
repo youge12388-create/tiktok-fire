@@ -57,6 +57,10 @@ logs/
 *.png
 *.jpg
 *.jpeg
+# README 演示截图是公开文档资产，不属于运行时异常截图。
+!docs/
+!docs/images/
+!docs/images/*.png
 
 # 编辑器与系统文件
 .DS_Store
