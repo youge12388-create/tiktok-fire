@@ -217,7 +217,7 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: #090b0d;
+  background: var(--digital-wave-background, #090b0d);
   pointer-events: none;
 }
 

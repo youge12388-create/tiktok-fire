@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from core import ledger
 from core.config import load_config, save_config
-from core.runtime import load_runtime
+from core.runtime import load_runtime, update_runtime
 from core.runtime import record_contacts as rt_record_contacts
 
 from .douyin import douyin
@@ -37,27 +37,93 @@ def list_contacts(account_id: str) -> dict:
         "contacts_complete": rt.get("contacts_complete"),
         "contacts_scan_rounds": rt.get("contacts_scan_rounds"),
         "contacts_stop_reason": rt.get("contacts_stop_reason"),
+        "contacts_scan_mode": rt.get("contacts_scan_mode"),
         "fetching": account_id in contacts_fetching,
         "selected_count": selected_count,
         "account_id": account_id,
     }
 
 
-def sync_contacts(account_id: str) -> dict:
-    """同步联系人：抓取 -> 写 runtime -> 合并进好友台账。"""
-    data = douyin.fetch_contacts(account_id)
+def _contact_sync_key(contact: dict) -> str:
+    conversation_id = str(contact.get("conversation_id") or "").strip()
+    if conversation_id:
+        return f"conversation:{conversation_id}"
+    sync_key = str(contact.get("sync_key") or "").strip()
+    if sync_key:
+        return f"sync:{sync_key}"
+    return f"name:{str(contact.get('name') or '').strip()}"
+
+
+def _merge_scan_snapshots(previous: list[dict] | None, current: list[dict] | None) -> list[dict]:
+    """按联系人稳定键合并扫描快照，当前扫描的数据覆盖旧的火花天数。"""
+    merged: list[dict] = []
+    positions: dict[str, int] = {}
+    for item in (previous or []):
+        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            continue
+        key = _contact_sync_key(item)
+        if key in positions:
+            merged[positions[key]] = item
+        else:
+            positions[key] = len(merged)
+            merged.append(item)
+    for item in (current or []):
+        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            continue
+        key = _contact_sync_key(item)
+        if key in positions:
+            merged[positions[key]] = item
+        else:
+            positions[key] = len(merged)
+            merged.append(item)
+    return merged
+
+
+def _sync_contacts(account_id: str, mode: str = "initial") -> dict:
+    if mode not in {"initial", "supplement"}:
+        raise ValueError("联系人同步 mode 必须是 initial 或 supplement")
+    previous = (load_runtime(account_id).get("contacts") or []) if mode == "supplement" else []
+    supplement = mode == "supplement"
+    data = douyin.fetch_contacts(account_id, supplement=True) if supplement else douyin.fetch_contacts(account_id)
+    data = dict(data or {})
+    data["scan_mode"] = mode
+    data["names"] = _merge_scan_snapshots(previous, data.get("names"))
     rt_record_contacts(data, account_id)
     if data.get("logged_out"):
         report_session_expired(account_id, str(data.get("error") or "同步联系人时检测到登录态失效"))
     merge_stats = None
     if data.get("names"):
         merge_stats = ledger.merge_consumer_contacts(data["names"], account_id)
-    return {"data": data, "merge": merge_stats}
+        _remove_blocked_names_from_config(account_id, merge_stats)
+    return {"data": data, "merge": merge_stats, "mode": mode}
+
+
+def sync_contacts(account_id: str, mode: str = "initial") -> dict:
+    """执行初次或补充扫描；保留已有联系人并把本次结果合并进去。"""
+    return _sync_contacts(account_id, mode=mode)
 
 
 def _mirror_friends(account_id: str, names: list[str]) -> None:
     """把当前勾选名单镜像到 config.friends，保持 CLI / 兼容路径可见。"""
     save_config({"friends": list(names)}, account_id)
+
+
+def _remove_blocked_names_from_config(account_id: str, stats: dict | None) -> None:
+    """同步清理同名联系人产生的历史选择，避免删除台账后 config.friends 又把它们带回。"""
+    blocked = {
+        str(name).replace("\u00a0", " ").strip()
+        for name in (stats or {}).get("duplicate_names", [])
+        if str(name).replace("\u00a0", " ").strip()
+    }
+    if not blocked:
+        return
+    cfg = load_config(account_id)
+    keep = [
+        name for name in cfg.get("friends", [])
+        if str(name).replace("\u00a0", " ").strip() not in blocked
+    ]
+    if keep != cfg.get("friends", []):
+        save_config({"friends": keep}, account_id)
 
 
 def _normalize_names(names: list[str] | None) -> list[str]:
@@ -111,4 +177,24 @@ def delete_contacts(account_id: str, names: list[str], contact_keys: list[str] |
     cfg = load_config(account_id)
     keep = [n for n in cfg.get("friends", []) if str(n).strip() not in remove]
     save_config({"friends": keep}, account_id)
+    return stats
+
+
+def delete_all_contacts(account_id: str) -> dict:
+    """删除该账号全部联系人，并清空兼容配置中的勾选名单。"""
+    stats = ledger.remove_all_contacts(account_id)
+    save_config({"friends": []}, account_id)
+    # 删除后不可让下一次「初次同步」把旧的 runtime 快照重新带回台账；
+    # 补充同步只有在用户明确点击继续时才读取已有快照。
+    update_runtime(
+        account_id,
+        contacts=[],
+        contacts_at=None,
+        contacts_error=None,
+        contacts_warning=None,
+        contacts_complete=None,
+        contacts_scan_rounds=0,
+        contacts_stop_reason="",
+        contacts_scan_mode="initial",
+    )
     return stats

@@ -339,45 +339,62 @@ _EXTRACT_JS = """
             out.push({ name: finalName, streak: streak, avatar: avatar, conversation_id: conversationId, sync_key: rowKey });
         });
 
-        // 虚拟列表的真正滚动容器通常是会话行的祖先，不能只依赖不稳定的 class 名。
+        // 虚拟列表的真正滚动容器通常是会话行的祖先。优先选择可滚动范围最大的祖先，
+        // 避免把内部布局容器误判成列表，从而在首屏就提前报告「已到底」。
         let atBottom = false;
+        let scrollTop = 0;
+        let clientHeight = 0;
+        let scrollHeight = 0;
         try {
-            let scroller = null;
+            const candidates = [];
             let parent = rows[0] && rows[0].parentElement;
             while (parent && parent !== document.body) {
-                if (parent.scrollHeight > parent.clientHeight + 8) {
-                    scroller = parent;
-                    break;
-                }
+                if (parent.scrollHeight > parent.clientHeight + 8) candidates.push(parent);
                 parent = parent.parentElement;
             }
-            if (!scroller) scroller = document.querySelector(
+            const named = document.querySelector(
                 '[class*="conversationList"], [class*="chatList"], [class*="ContactList"], [class*="contactList"]'
             );
-            const el = scroller && scroller.scrollHeight > scroller.clientHeight ? scroller : document.scrollingElement;
-            atBottom = el ? (el.scrollTop + el.clientHeight >= el.scrollHeight - 8) : true;
+            if (named && named.scrollHeight > named.clientHeight + 8) candidates.push(named);
+            const el = candidates.sort(
+                (a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)
+            )[0] || document.scrollingElement;
+            if (el) {
+                scrollTop = el.scrollTop || 0;
+                clientHeight = el.clientHeight || 0;
+                scrollHeight = el.scrollHeight || 0;
+                const range = Math.max(0, scrollHeight - clientHeight);
+                // 没有任何行时页面可能仍处于加载态，不能把 document 的初始位置当成完整。
+                atBottom = rows.length > 0 && scrollTop >= Math.max(0, range - 8);
+            }
         } catch (e) {}
 
-        return { items: out, atBottom: atBottom };
+        return {
+            items: out,
+            atBottom: atBottom,
+            scrollTop: scrollTop,
+            clientHeight: clientHeight,
+            scrollHeight: scrollHeight,
+        };
     }
 """
 
 _SCROLL_CHAT_LIST_JS = """
     () => {
         const rows = document.querySelectorAll('[class*="conversationConversationItemwrapper"]');
-        let el = null;
+        const candidates = [];
         let parent = rows[0] && rows[0].parentElement;
         while (parent && parent !== document.body) {
-            if (parent.scrollHeight > parent.clientHeight + 8) {
-                el = parent;
-                break;
-            }
+            if (parent.scrollHeight > parent.clientHeight + 8) candidates.push(parent);
             parent = parent.parentElement;
         }
-        if (!el) el = document.querySelector(
+        const named = document.querySelector(
             '[class*="conversationList"], [class*="chatList"], [class*="ContactList"], [class*="contactList"]'
         );
-        if (!el || el.scrollHeight <= el.clientHeight) el = document.scrollingElement;
+        if (named && named.scrollHeight > named.clientHeight + 8) candidates.push(named);
+        const el = candidates.sort(
+            (a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight)
+        )[0] || document.scrollingElement;
         if (!el) return false;
         const before = el.scrollTop;
         el.scrollTop = Math.min(el.scrollTop + Math.max(240, Math.floor(el.clientHeight * 0.7)), el.scrollHeight);
@@ -404,7 +421,7 @@ def _scroll_and_extract(page, collected: list[dict], max_rounds: int = 120) -> d
     列表为虚拟滚动，步长过大会跳过部分行导致火花遗漏，故小步滚动。
     只有明确触底才标记完整；渲染迟缓、滚动失效、到达轮次上限均作为不完整结果反馈。
     """
-    stable = 0
+    stalled = 0
     seen_keys = {
         str(item.get("conversation_id") or item.get("sync_key") or f"name:{item.get('name', '')}")
         for item in collected
@@ -423,31 +440,38 @@ def _scroll_and_extract(page, collected: list[dict], max_rounds: int = 120) -> d
                 str(item.get("conversation_id") or item.get("sync_key") or f"name:{item.get('name', '')}")
                 for item in new_items
             )
-            stable = 0
-        else:
-            stable += 1
         if res.get("atBottom"):
             return {"complete": True, "rounds": round_no, "stop_reason": "bottom_reached"}
-        # 虚拟列表偶尔需要多个帧才更新；连续空白不再伪装成已完成。
-        if stable >= 8:
-            return {"complete": False, "rounds": round_no, "stop_reason": "no_new_rows"}
+        # 虚拟列表可能在滚动后连续几个帧没有新行。只要滚动位置仍在前进，
+        # 就继续这一趟扫描；只有连续多次无法推动列表才交给「继续补充扫描」。
         try:
             moved = page.evaluate(_SCROLL_CHAT_LIST_JS)
             if not moved:
-                return {"complete": False, "rounds": round_no, "stop_reason": "scroll_stalled"}
+                stalled += 1
+                if stalled >= 3:
+                    return {"complete": False, "rounds": round_no, "stop_reason": "scroll_stalled"}
+                page.wait_for_timeout(500 * stalled)
+                continue
+            stalled = 0
         except Exception:
             logger.info("聊天列表滚动失败，停止同步")
             return {"complete": False, "rounds": round_no, "stop_reason": "scroll_error"}
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(650)
     return {"complete": False, "rounds": max_rounds, "stop_reason": "round_limit"}
 
 
-def fetch_chat_contacts(account_id: str | None = None) -> dict:
-    """从抖音私信页左侧聊天列表读取联系人（含火花天数），供网页端勾选。"""
+def fetch_chat_contacts(account_id: str | None = None, supplement: bool = False) -> dict:
+    """从抖音私信页左侧聊天列表读取联系人（含火花天数）。
+
+    ``supplement=True`` 表示这是对上一次未确认到底的补充扫描。抓取本身仍从
+    当前页面顶部开始一次连续滚动，已有结果由 service 层按稳定键合并，避免
+    为了补齐尾部而重复整页 reload 或覆盖之前已经扫到的联系人。
+    """
     aid = account_id or DEFAULT_ACCOUNT_ID
     result = {
         "at": _now(), "names": [], "error": None, "logged_out": False,
         "complete": False, "scan_rounds": 0, "stop_reason": "not_started",
+        "scan_mode": "supplement" if supplement else "initial",
     }
     state = get_valid_state_path(aid)
     if state is None:
@@ -470,21 +494,14 @@ def fetch_chat_contacts(account_id: str | None = None) -> dict:
 
             collected: list[dict] = []
             scan = {"complete": False, "rounds": 0, "stop_reason": "not_started"}
-            for attempt in range(3):
-                try:
-                    page.wait_for_selector(".conversationConversationItemtitle", timeout=45000)
-                except Exception:
-                    logger.info("第 %s 次等待联系人列表超时", attempt + 1)
+            try:
+                page.wait_for_selector(".conversationConversationItemtitle", timeout=45000)
+            except Exception:
+                logger.info("等待联系人列表超时，保留当前已读取结果并标记为未完成")
 
-                scan = _scroll_and_extract(page, collected)
-
-                if scan["complete"]:
-                    break
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=90000)
-                    page.wait_for_timeout(3000)
-                except Exception:
-                    break
+            # 一次同步只打开一次页面并连续滚动；不再用整页 reload 重跑三遍。
+            # 页面没有到底时由上层「继续补充扫描」再次启动一趟新会话，已入库结果不会被覆盖。
+            scan = _scroll_and_extract(page, collected)
 
             result["names"] = collected
             result["complete"] = bool(scan["complete"])

@@ -262,7 +262,7 @@ onMounted(load)
 .dashboard-grid { display: grid; grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.5fr); gap: 16px; }
 .section-loading { padding: 20px; }
 .task-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; padding: 12px 20px 20px; }
-.task-card { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface); }
+.task-card { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border: 1px solid var(--color-glass-border); border-radius: 8px; background: var(--color-surface-glass-muted); background-image: var(--color-glass-sheen); box-shadow: inset 0 1px 0 var(--color-glass-highlight), inset 0 -1px 0 var(--color-glass-lowlight); }
 .task-card-top { display: flex; align-items: center; gap: 10px; }
 .account-icon { display: grid; width: 30px; height: 30px; flex: 0 0 30px; place-items: center; border-radius: 50%; color: var(--color-text-secondary); background: var(--color-surface-muted); }
 .task-card-main { min-width: 0; flex: 1; }
@@ -274,7 +274,7 @@ onMounted(load)
 .task-card-btns { display: flex; gap: 6px; }
 .run-row { display: grid; min-height: 50px; grid-template-columns: minmax(110px, 1.2fr) minmax(100px, 1fr) 82px 105px; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--color-border); font-size: 12px; }
 .run-row:last-child { border-bottom: 0; }
-.run-table-header { min-height: 42px; color: var(--color-text-secondary); background: var(--color-surface-muted); font-weight: 600; }
+.run-table-header { min-height: 42px; color: var(--color-text-secondary); background: var(--color-surface-glass-muted); font-weight: 600; }
 .run-account { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-count { font-variant-numeric: tabular-nums; }
 .small-empty { display: flex; min-height: 180px; align-items: center; justify-content: center; gap: 8px; color: var(--color-text-secondary); font-size: 12px; }

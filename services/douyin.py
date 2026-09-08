@@ -18,9 +18,9 @@ class DouyinService:
         """执行续火任务（dry_run=True 时不发送真实消息）。"""
         return automation.run_send(dry_run=dry_run, only_names=only_names, account_id=account_id)
 
-    def fetch_contacts(self, account_id: str) -> dict:
-        """同步抖音私信页聊天联系人。"""
-        return automation.fetch_chat_contacts(account_id)
+    def fetch_contacts(self, account_id: str, supplement: bool = False) -> dict:
+        """同步抖音私信页聊天联系人；supplement 表示补充上一趟未完成扫描。"""
+        return automation.fetch_chat_contacts(account_id, supplement=supplement)
 
     def scan_start(self, account_id: str) -> dict:
         return login_session.start(account_id)
