@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from core import scheduler
 from db.database import get_connection
-from services import account_service, run_service
+from services import account_service, notification_service, run_service
 
 from .deps import require_admin
 
 router = APIRouter(prefix="/system", tags=["system"])
+logger = logging.getLogger("douyin-cloud-streak")
 
 _STARTED = time.time()
 VERSION = "1.0.0"
@@ -23,10 +25,12 @@ VERSION = "1.0.0"
 def health():
     db_ok = False
     try:
-        with get_connection() as conn:
-            conn.execute("SELECT 1").fetchone()
+        # 健康检查必须快速失败，且实际读取 schema，不能只计算常量 SELECT 1。
+        with get_connection(timeout_seconds=2) as conn:
+            conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
         db_ok = True
-    except Exception:
+    except Exception:  # noqa: BLE001
+        logger.exception("数据库健康检查失败")
         db_ok = False
     scheduler_ok = scheduler.is_running()
     ready = db_ok and scheduler_ok
@@ -44,6 +48,21 @@ def health():
 def live_health():
     """仅表示进程可响应；容器编排应使用 /health 检查服务是否 ready。"""
     return {"ok": True, "version": VERSION, "service": "douyin-cloud-streak"}
+
+
+@router.get("/notifications/status")
+def notification_status(_admin: str = Depends(require_admin)):
+    """只返回告警通道是否完整配置，绝不返回 Webhook 或密钥。"""
+    return {"dingtalk": {"configured": notification_service.dingtalk_configured()}}
+
+
+@router.post("/notifications/test")
+def test_notification(_admin: str = Depends(require_admin)):
+    ok, message = notification_service.send_test_notification()
+    if not ok:
+        status_code = 400 if not notification_service.dingtalk_configured() else 502
+        raise HTTPException(status_code=status_code, detail=message)
+    return {"ok": True, "message": message}
 
 
 @router.get("/summary")

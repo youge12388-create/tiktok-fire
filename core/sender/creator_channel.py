@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import time
 
-from ..browser import open_browser
+from ..browser import open_browser, refresh_authenticated_state
 from ..config import DEFAULT_ACCOUNT_ID, get_valid_state_path, load_config
 from ..guard import detect_rate_limit
 
@@ -90,7 +90,7 @@ def send_first_message(
                     locale="zh-CN",
                 )
                 page = context.new_page()
-                result = _do_send(page, context, nickname, msg_text, dry_run, max_scrolls)
+                result = _do_send(page, context, nickname, msg_text, dry_run, max_scrolls, valid_state)
                 return result
             finally:
                 try:
@@ -100,13 +100,21 @@ def send_first_message(
         else:
             ctx_kwargs = {"viewport": {"width": 1366, "height": 900}, "locale": "zh-CN"}
             with open_browser(state_path=valid_state, **ctx_kwargs) as (p, browser, context, page):
-                return _do_send(page, context, nickname, msg_text, dry_run, max_scrolls)
+                return _do_send(page, context, nickname, msg_text, dry_run, max_scrolls, valid_state)
     except Exception as e:
         logger.error("通道 B 发送异常: %s", e)
         return False, f"通道 B 异常: {e}"
 
 
-def _do_send(page, context, nickname: str, msg_text: str, dry_run: bool, max_scrolls: int) -> tuple[bool, str]:
+def _do_send(
+    page,
+    context,
+    nickname: str,
+    msg_text: str,
+    dry_run: bool,
+    max_scrolls: int,
+    state_path,
+) -> tuple[bool, str]:
     """实际发送逻辑：打开页面 → 定位好友 → 输入消息 → 发送。"""
     page.goto(CREATOR_CHAT_URL, wait_until="domcontentloaded", timeout=90000)
     page.wait_for_timeout(10000)
@@ -115,6 +123,7 @@ def _do_send(page, context, nickname: str, msg_text: str, dry_run: bool, max_scr
         return False, f"creator 页跳转到登录页（{page.url}）"
     if not any(c["name"].startswith("sessionid") for c in context.cookies()):
         return False, "creator 页未检测到 sessionid cookie，登录态可能已过期"
+    refresh_authenticated_state(context, state_path)
 
     # 点击「好友」tab
     for sel in FRIENDS_TAB_CANDIDATES:

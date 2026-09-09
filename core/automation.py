@@ -14,7 +14,7 @@ import random
 import time
 from datetime import datetime
 
-from .browser import open_browser
+from .browser import open_browser, refresh_authenticated_state
 from . import ledger
 from .config import DEFAULT_ACCOUNT_ID, DATA_DIR, get_valid_state_path, load_config
 from .guard import detect_rate_limit
@@ -491,6 +491,7 @@ def fetch_chat_contacts(account_id: str | None = None, supplement: bool = False)
                 result["error"] = why
                 result["logged_out"] = True
                 return result
+            refresh_authenticated_state(context, state)
 
             collected: list[dict] = []
             scan = {"complete": False, "rounds": 0, "stop_reason": "not_started"}
@@ -673,6 +674,7 @@ def run_send(dry_run: bool = False, only_names: list[str] | None = None, account
                 result["failed"].append({"name": "_system", "reason": why})
                 result["screenshot"] = _screenshot(page, aid)
                 return result
+            refresh_authenticated_state(context, state)
 
             logger.info("[%s] 待发送好友 %s 人，dry_run=%s", aid, len(targets), dry_run)
             for entry in targets:

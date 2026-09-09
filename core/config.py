@@ -36,18 +36,21 @@ def account_state_path(account_id: str | None = None) -> Path:
 
 def get_valid_state_path(account_id: str | None = None) -> Path | None:
     """自动兼容并双向自愈检查账号目录 state.json 与根目录 state.json（仅默认账号）。"""
+    from .session_state import read_storage_state, write_storage_state
+
     aid = account_id or DEFAULT_ACCOUNT_ID
     sp = account_state_path(aid)
-    if sp.exists() and sp.stat().st_size > 30:
+    if read_storage_state(sp, require_login_cookie=True) is not None:
         return sp
-    if aid == DEFAULT_ACCOUNT_ID and ROOT_STATE_PATH.exists() and ROOT_STATE_PATH.stat().st_size > 30:
+    if aid == DEFAULT_ACCOUNT_ID:
+        root_state = read_storage_state(ROOT_STATE_PATH, require_login_cookie=True)
+        if root_state is None:
+            return None
         try:
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            import shutil
-            shutil.copy2(ROOT_STATE_PATH, sp)
+            write_storage_state(sp, root_state)
+            return sp
         except Exception:
-            pass
-        return sp
+            return ROOT_STATE_PATH
     return None
 
 

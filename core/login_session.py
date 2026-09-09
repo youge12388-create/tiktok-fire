@@ -24,13 +24,12 @@ import subprocess
 import threading
 import time
 import uuid
-from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 from .accounts import acquire_browser_slot, release_browser_slot
-from .config import DEFAULT_ACCOUNT_ID, ROOT_STATE_PATH, account_state_path
 from .runtime import clear_login_expired_alert, update_runtime
+from .session_state import LOGIN_COOKIE_NAMES, persist_account_context
 from .selectors import (
     LOGIN_TAB_TEXT,
     QR_CLICK_CANDIDATES,
@@ -50,7 +49,7 @@ SESSION_TIMEOUT = 300
 QR_REFRESH_LIMIT = 5
 
 # 登录成功判定 Cookie：覆盖抖音各端变体（sid_guard/sid_tt/uid_tt 与 sessionid 同批下发）
-_LOGIN_COOKIE_NAMES = {"sessionid", "sessionid_ss", "sid_tt", "sid_guard", "uid_tt"}
+_LOGIN_COOKIE_NAMES = LOGIN_COOKIE_NAMES
 
 
 _PROFILE_NICKNAME_JS = """
@@ -704,30 +703,5 @@ def _click_qr_refresh(page) -> None:
 
 def _save_state(context, account_id: str) -> None:
     """导出 storage_state 覆盖该账号 state.json（default 账号同步根目录副本）。"""
-    state = context.storage_state()
-    raw = _ensure_origins(state)
-    path: Path = account_state_path(account_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    import json
-    payload = json.dumps(raw, ensure_ascii=False)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(payload, encoding="utf-8")
-    os.replace(tmp, path)
-    if account_id == DEFAULT_ACCOUNT_ID:
-        try:
-            root_tmp = ROOT_STATE_PATH.with_name(
-                f"{ROOT_STATE_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-            )
-            root_tmp.write_text(payload, encoding="utf-8")
-            os.replace(root_tmp, ROOT_STATE_PATH)
-        except Exception:
-            pass
-
-
-def _ensure_origins(state) -> dict:
-    """storage_state 兼容处理：确保结构与上传校验一致（cookies 列表 + origins）。"""
-    if isinstance(state, dict):
-        state.setdefault("cookies", [])
-        state.setdefault("origins", [])
-        return state
-    return {"cookies": [], "origins": []}
+    if not persist_account_context(context, account_id):
+        raise RuntimeError("登录成功后未检测到可持久化的会话 Cookie")

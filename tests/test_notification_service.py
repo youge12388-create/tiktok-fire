@@ -50,3 +50,28 @@ def test_login_recovery_rearms_next_expired_notification(monkeypatch):
     notification_service.report_session_ok(account_id)
     assert "login_expired_alert" not in load_runtime(account_id)
     assert notification_service.report_session_expired(account_id, "再次失效") is True
+
+
+def test_notification_test_message_uses_configured_channel_without_dedupe(monkeypatch):
+    monkeypatch.setattr(app_config, "DINGTALK_WEBHOOK_URL", "https://example.test/robot/send?access_token=token")
+    monkeypatch.setattr(app_config, "DINGTALK_SECRET", "SEC-not-a-real-secret")
+    messages = []
+    monkeypatch.setattr(notification_service, "_post_dingtalk", lambda content: messages.append(content) or True)
+
+    ok, message = notification_service.send_test_notification()
+
+    assert ok is True
+    assert "测试消息已发送" in message
+    assert len(messages) == 1
+    assert "抖音续火花" in messages[0]
+    assert "告警通道测试" in messages[0]
+
+
+def test_notification_test_message_reports_missing_configuration(monkeypatch):
+    monkeypatch.setattr(app_config, "DINGTALK_WEBHOOK_URL", "")
+    monkeypatch.setattr(app_config, "DINGTALK_SECRET", "")
+
+    ok, message = notification_service.send_test_notification()
+
+    assert ok is False
+    assert "未完整配置" in message

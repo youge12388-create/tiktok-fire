@@ -45,12 +45,12 @@ CREATE INDEX IF NOT EXISTS idx_item_account ON run_items(account_id);
 """
 
 
-def get_connection() -> sqlite3.Connection:
+def get_connection(timeout_seconds: float = 30) -> sqlite3.Connection:
     """每次调用返回一条新连接，避免跨线程共享 sqlite 连接的问题。"""
-    conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
+    timeout_ms = max(1, int(timeout_seconds * 1000))
+    conn = sqlite3.connect(DB_PATH, timeout=timeout_seconds, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute(f"PRAGMA busy_timeout={timeout_ms}")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -59,6 +59,10 @@ def init_db() -> None:
     """确保数据库文件与表结构存在。"""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with get_connection() as conn:
+        # journal_mode 会争用数据库锁，只在启动初始化时设置，普通请求不得重复切换。
+        mode = str(conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower()
+        if mode != "wal":
+            raise RuntimeError(f"SQLite WAL 模式初始化失败：{mode}")
         conn.executescript(SCHEMA_SQL)
         # 进程在任务中途重启时，避免历史记录永久停留在 running。
         conn.execute(
