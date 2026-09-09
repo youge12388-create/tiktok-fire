@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { CircleCheck, InfoFilled } from '@element-plus/icons-vue'
+import { Bell, CircleCheck, InfoFilled } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import http from '@/api/http'
 import { getErrorMessage } from '@/api/errors'
 
@@ -15,6 +16,10 @@ interface Summary {
 const summary = ref<Summary | null>(null)
 const loading = ref(true)
 const errorMessage = ref('')
+const notificationConfigured = ref(false)
+const notificationLoading = ref(true)
+const notificationError = ref('')
+const notificationTesting = ref(false)
 
 function fmtUptime(seconds?: number) {
   if (seconds == null) return '—'
@@ -36,7 +41,35 @@ async function load() {
   }
 }
 
-onMounted(() => void load())
+async function loadNotificationStatus() {
+  notificationLoading.value = true
+  notificationError.value = ''
+  try {
+    const { data } = await http.get<{ dingtalk?: { configured?: boolean } }>('/system/notifications/status')
+    notificationConfigured.value = Boolean(data.dingtalk?.configured)
+  } catch (error: unknown) {
+    notificationError.value = getErrorMessage(error, '无法读取钉钉告警状态')
+  } finally {
+    notificationLoading.value = false
+  }
+}
+
+async function testDingtalk() {
+  notificationTesting.value = true
+  try {
+    const { data } = await http.post<{ message?: string }>('/system/notifications/test')
+    ElMessage.success(data.message || '测试消息已发送，请检查钉钉群')
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '钉钉测试消息发送失败'))
+  } finally {
+    notificationTesting.value = false
+  }
+}
+
+onMounted(() => {
+  void load()
+  void loadNotificationStatus()
+})
 </script>
 
 <template>
@@ -116,6 +149,51 @@ onMounted(() => void load())
         <el-button type="primary" @click="load">重新加载</el-button>
       </div>
     </section>
+
+    <section class="surface notification-surface" aria-labelledby="notification-title">
+      <div class="notification-heading">
+        <span class="notification-icon"><el-icon><Bell /></el-icon></span>
+        <div>
+          <h2 id="notification-title">账号掉线通知</h2>
+          <p>账号确认退出时，通过钉钉机器人发送一次告警。</p>
+        </div>
+        <el-tag
+          v-if="!notificationLoading && !notificationError"
+          :type="notificationConfigured ? 'success' : 'warning'"
+          effect="light"
+        >
+          {{ notificationConfigured ? '通道已配置' : '尚未配置' }}
+        </el-tag>
+      </div>
+
+      <div v-if="notificationLoading" class="notification-loading">
+        <el-skeleton :rows="1" animated />
+      </div>
+      <el-alert
+        v-else-if="notificationError"
+        class="notification-alert"
+        type="error"
+        :title="notificationError"
+        :closable="false"
+        show-icon
+      />
+      <div v-else class="notification-action">
+        <div class="signal-line" :class="{ 'is-ready': notificationConfigured }" aria-hidden="true">
+          <i />
+          <span>{{ notificationConfigured ? 'DINGTALK ALERT READY' : 'DINGTALK ALERT OFFLINE' }}</span>
+        </div>
+        <p v-if="notificationConfigured">发送一条测试消息，确认机器人、加签密钥和群消息接收都正常。</p>
+        <p v-else>请先在服务器环境变量中配置钉钉 Webhook 地址和加签密钥，然后重启服务。</p>
+        <el-button
+          type="primary"
+          :loading="notificationTesting"
+          :disabled="!notificationConfigured"
+          @click="testDingtalk"
+        >
+          发送测试消息
+        </el-button>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -126,6 +204,83 @@ onMounted(() => void load())
 
 .system-surface {
   padding: 24px;
+}
+
+.notification-surface {
+  margin-top: 16px;
+  padding: 24px;
+}
+
+.notification-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.notification-heading h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.notification-heading p,
+.notification-action p {
+  margin: 5px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.notification-heading .el-tag {
+  margin-left: auto;
+}
+
+.notification-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  font-size: 20px;
+}
+
+.notification-loading,
+.notification-alert,
+.notification-action {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--color-border);
+}
+
+.notification-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  column-gap: 24px;
+}
+
+.signal-line {
+  display: inline-flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-warning);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.signal-line i {
+  width: 7px;
+  height: 7px;
+  background: currentcolor;
+  box-shadow: 10px 0 0 color-mix(in srgb, currentcolor 45%, transparent);
+}
+
+.signal-line.is-ready {
+  color: var(--color-success);
 }
 
 .service-status {
@@ -233,6 +388,27 @@ code {
 @media (max-width: 640px) {
   .system-surface {
     padding: 20px 16px;
+  }
+
+  .notification-surface {
+    padding: 20px 16px;
+  }
+
+  .notification-heading {
+    align-items: flex-start;
+  }
+
+  .notification-heading .el-tag {
+    flex: 0 0 auto;
+  }
+
+  .notification-action {
+    grid-template-columns: 1fr;
+  }
+
+  .notification-action .el-button {
+    width: 100%;
+    margin-top: 16px;
   }
 
   .info-list {

@@ -18,7 +18,8 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 from .accounts import acquire_browser_slot, release_browser_slot
-from .config import account_state_path, get_valid_state_path
+from .config import get_valid_state_path
+from .session_state import persist_context_state
 
 logger = logging.getLogger("douyin-cloud-streak")
 
@@ -29,6 +30,18 @@ _COMMON_ARGS = [
     "--disable-gpu",
     "--disable-blink-features=AutomationControlled",
 ]
+
+
+def refresh_authenticated_state(context, state_path: Path | str) -> bool:
+    """保存页面加载期间刷新的 Cookie；失败只记录，不中断当前业务操作。"""
+    try:
+        saved = persist_context_state(context, state_path, require_login_cookie=True)
+        if not saved:
+            logger.warning("登录态刷新跳过：当前浏览器未检测到会话 Cookie")
+        return saved
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("登录态刷新保存失败（保留原文件）：%s", str(exc)[:200])
+        return False
 
 
 def _apply_stealth(page) -> None:

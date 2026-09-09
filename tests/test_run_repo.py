@@ -28,3 +28,22 @@ def test_wal_mode_enabled():
     with get_connection() as conn:
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert mode.lower() == "wal"
+
+
+def test_read_connection_stays_available_during_write_transaction():
+    from db.database import get_connection
+
+    with get_connection() as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            """
+            INSERT INTO run_records
+                (account_id, task_type, status, success_count, failed_count, risk_detected)
+            VALUES ('health-lock-test', 'dry_run', 'running', 0, 0, 0)
+            """
+        )
+        with get_connection() as reader:
+            row = reader.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+        writer.rollback()
+
+    assert row[0] > 0

@@ -64,6 +64,48 @@ def test_authenticated_can_access_runs(client):
     assert r.status_code == 200 and "items" in r.json()
 
 
+def test_notification_status_and_test_require_login(client):
+    assert client.get("/api/v1/system/notifications/status").status_code == 401
+    assert client.post("/api/v1/system/notifications/test").status_code == 401
+
+
+def test_authenticated_admin_can_send_notification_test(client, monkeypatch):
+    from api import system as system_api
+
+    client.post("/api/v1/auth/login", json={"username": "admin", "password": "T3st-Strong-Passw0rd!"})
+    monkeypatch.setattr(system_api.notification_service, "dingtalk_configured", lambda: True)
+    monkeypatch.setattr(
+        system_api.notification_service,
+        "send_test_notification",
+        lambda: (True, "测试消息已发送，请在钉钉群中确认收到"),
+    )
+
+    status = client.get("/api/v1/system/notifications/status")
+    sent = client.post("/api/v1/system/notifications/test")
+
+    assert status.status_code == 200
+    assert status.json() == {"dingtalk": {"configured": True}}
+    assert sent.status_code == 200
+    assert sent.json()["ok"] is True
+
+
+def test_notification_test_returns_actionable_configuration_error(client, monkeypatch):
+    from api import system as system_api
+
+    client.post("/api/v1/auth/login", json={"username": "admin", "password": "T3st-Strong-Passw0rd!"})
+    monkeypatch.setattr(system_api.notification_service, "dingtalk_configured", lambda: False)
+    monkeypatch.setattr(
+        system_api.notification_service,
+        "send_test_notification",
+        lambda: (False, "钉钉告警未完整配置"),
+    )
+
+    response = client.post("/api/v1/system/notifications/test")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "钉钉告警未完整配置"
+
+
 def test_csrf_uses_configured_session_cookie_name():
     mini_app = FastAPI()
 

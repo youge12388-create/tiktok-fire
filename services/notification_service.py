@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import time
+from datetime import datetime
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
@@ -81,3 +82,19 @@ def report_session_ok(account_id: str) -> None:
     """仅由已确认登录成功的路径调用，避免未知状态误解除告警。"""
     update_runtime(account_id, session_status="ok")
     clear_login_expired_alert(account_id)
+
+
+def send_test_notification() -> tuple[bool, str]:
+    """主动验证钉钉机器人配置；不占用账号掉线告警的去重状态。"""
+    if not dingtalk_configured():
+        return False, "钉钉告警未完整配置，请设置 Webhook 地址和加签密钥"
+    content = (
+        "【抖音续火花】告警通道测试\n"
+        "如果你看到这条消息，账号掉线通知通道配置正常。\n"
+        f"测试时间：{datetime.now().astimezone().isoformat(timespec='seconds')}"
+    )
+    if not _post_dingtalk(content):
+        logger.warning("钉钉告警测试发送失败")
+        return False, "钉钉测试消息发送失败，请检查机器人配置和安全设置"
+    logger.info("钉钉告警测试发送成功")
+    return True, "测试消息已发送，请在钉钉群中确认收到"

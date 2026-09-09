@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from ..browser import open_browser
+from ..browser import open_browser, refresh_authenticated_state
 from ..config import DEFAULT_ACCOUNT_ID, account_state_path, get_valid_state_path, load_config
 
 logger = logging.getLogger("douyin-cloud-streak")
@@ -137,6 +137,7 @@ def collect_short_id_map(
             if error:
                 result["error"] = error
                 return result
+            refresh_authenticated_state(context, valid_state)
 
             _click_friends_tab(page)
             page.wait_for_timeout(3000)

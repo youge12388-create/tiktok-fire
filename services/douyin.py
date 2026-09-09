@@ -43,13 +43,14 @@ class DouyinService:
             }
         try:
             from core.automation import CHAT_URL, check_login
-            from core.browser import open_browser
+            from core.browser import open_browser, refresh_authenticated_state
 
             with open_browser(state_path=state_path) as (p, browser, context, page):
                 page.goto(CHAT_URL, timeout=90000, wait_until="domcontentloaded")
                 page.wait_for_timeout(3000)
                 logged, why = check_login(page)
                 if logged:
+                    refresh_authenticated_state(context, state_path)
                     report_session_ok(account_id)
                 else:
                     report_session_expired(account_id, why)
