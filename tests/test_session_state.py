@@ -84,6 +84,52 @@ def test_failed_replace_preserves_existing_state_and_cleans_temp(state_dir, monk
     assert list(state_dir.glob("state.json.*.tmp")) == []
 
 
+def test_missing_data_directory_during_temp_create_retries_and_preserves_atomicity(state_dir, monkeypatch):
+    target = state_dir / "state.json"
+    session_state.write_storage_state(target, _state("old"))
+    real_open = Path.open
+    temp_open_attempts = 0
+
+    def missing_once(path, mode="r", *args, **kwargs):
+        nonlocal temp_open_attempts
+        if mode == "x" and path.name.startswith("state.json.") and path.name.endswith(".tmp"):
+            temp_open_attempts += 1
+            if temp_open_attempts == 1:
+                raise FileNotFoundError(2, "No such file or directory", str(path))
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(session_state.Path, "open", missing_once)
+
+    session_state.write_storage_state(target, _state("new"))
+
+    assert temp_open_attempts == 2
+    assert json.loads(target.read_text(encoding="utf-8"))["cookies"][0]["value"] == "new"
+    assert list(state_dir.glob("state.json.*.tmp")) == []
+
+
+def test_persistently_missing_data_directory_keeps_existing_state_and_returns_diagnostic(state_dir, monkeypatch):
+    target = state_dir / "state.json"
+    session_state.write_storage_state(target, _state("old"))
+    real_open = Path.open
+    temp_open_attempts = 0
+
+    def always_missing(path, mode="r", *args, **kwargs):
+        nonlocal temp_open_attempts
+        if mode == "x" and path.name.startswith("state.json.") and path.name.endswith(".tmp"):
+            temp_open_attempts += 1
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(session_state.Path, "open", always_missing)
+
+    with pytest.raises(session_state.StorageStateUnavailableError, match="登录态无法保存：数据目录不可用"):
+        session_state.write_storage_state(target, _state("new"))
+
+    assert temp_open_attempts == session_state._WRITE_ATTEMPTS
+    assert json.loads(target.read_text(encoding="utf-8"))["cookies"][0]["value"] == "old"
+    assert list(state_dir.glob("state.json.*.tmp")) == []
+
+
 def test_context_without_login_cookie_does_not_overwrite_existing_state(state_dir):
     target = state_dir / "state.json"
     session_state.write_storage_state(target, _state("old"))
