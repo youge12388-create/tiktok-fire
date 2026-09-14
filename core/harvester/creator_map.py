@@ -127,7 +127,7 @@ def collect_short_id_map(
         if valid_state is None:
             result["error"] = "该账号尚未上传有效登录态 state.json"
             return result
-        with open_browser(state_path=valid_state, **ctx_kwargs) as (p, browser, context, page):
+        with open_browser(state_path=valid_state, account_id=aid, **ctx_kwargs) as (p, browser, context, page):
             page.on("response", _on_response_factory(mapping, urls, api_path))
 
             page.goto(CREATOR_CHAT_URL, wait_until="domcontentloaded", timeout=90000)

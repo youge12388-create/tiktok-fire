@@ -56,6 +56,7 @@ def send_first_message(
     dry_run: bool = False,
     playwright: object | None = None,
     account_id: str | None = None,
+    context=None,
 ) -> tuple[bool, str]:
     """通过 creator 页给无会话好友发送首条消息。
 
@@ -74,32 +75,20 @@ def send_first_message(
     state_file = str(valid_state)
 
     try:
-        # 复用调用方的 playwright 实例
-        if playwright is not None:
-            p = playwright
-            owns_p = False
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox",
-                       "--disable-dev-shm-usage", "--disable-gpu"],
-            )
+        # Reuse the caller's persistent account context when available.  This
+        # avoids opening a second Chromium instance against the same profile.
+        if context is not None:
+            page = context.new_page()
             try:
-                context = browser.new_context(
-                    storage_state=state_file,
-                    viewport={"width": 1366, "height": 900},
-                    locale="zh-CN",
-                )
-                page = context.new_page()
-                result = _do_send(page, context, nickname, msg_text, dry_run, max_scrolls, valid_state)
-                return result
+                return _do_send(page, context, nickname, msg_text, dry_run, max_scrolls, valid_state)
             finally:
                 try:
-                    browser.close()
+                    page.close()
                 except Exception:
                     pass
         else:
             ctx_kwargs = {"viewport": {"width": 1366, "height": 900}, "locale": "zh-CN"}
-            with open_browser(state_path=valid_state, **ctx_kwargs) as (p, browser, context, page):
+            with open_browser(state_path=valid_state, account_id=aid, **ctx_kwargs) as (p, browser, context, page):
                 return _do_send(page, context, nickname, msg_text, dry_run, max_scrolls, valid_state)
     except Exception as e:
         logger.error("通道 B 发送异常: %s", e)

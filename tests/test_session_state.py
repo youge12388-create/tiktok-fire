@@ -29,6 +29,16 @@ class _Context:
         return self.state
 
 
+class _IndexedContext:
+    def __init__(self, state: dict):
+        self.state = state
+        self.options = None
+
+    def storage_state(self, **kwargs):
+        self.options = kwargs
+        return self.state
+
+
 def _state(value: str = "cookie-value") -> dict:
     return {
         "cookies": [
@@ -145,6 +155,15 @@ def test_context_refresh_replaces_state_after_login_is_confirmed(state_dir):
 
     assert session_state.persist_context_state(_Context(_state("refreshed")), target) is True
     assert json.loads(target.read_text(encoding="utf-8"))["cookies"][0]["value"] == "refreshed"
+
+
+def test_context_refresh_includes_indexed_db_when_supported(state_dir):
+    target = state_dir / "state.json"
+    context = _IndexedContext(_state("indexed-db"))
+
+    assert session_state.persist_context_state(context, target) is True
+    assert context.options == {"indexed_db": True}
+    assert json.loads(target.read_text(encoding="utf-8"))["cookies"][0]["value"] == "indexed-db"
 
 
 def test_invalid_storage_state_is_rejected_without_touching_existing_file(state_dir):

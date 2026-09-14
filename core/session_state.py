@@ -28,6 +28,19 @@ class StorageStateUnavailableError(OSError):
     """登录态目录持续不可用，调用方可展示明确的运维诊断。"""
 
 
+def _storage_state(context) -> dict:
+    """Export the complete supported Playwright state when available.
+
+    IndexedDB support was added after the minimum Playwright version accepted
+    by this project.  Keep older installations usable while ensuring current
+    installations preserve IndexedDB-backed authentication data.
+    """
+    try:
+        return context.storage_state(indexed_db=True)
+    except TypeError:
+        return context.storage_state()
+
+
 def _lock_for(path: Path) -> threading.Lock:
     key = str(path.resolve())
     with _locks_guard:
@@ -141,7 +154,7 @@ def persist_context_state(
     require_login_cookie: bool = True,
 ) -> bool:
     """导出当前浏览器状态；没有有效会话 Cookie 时不覆盖已有文件。"""
-    state = normalize_storage_state(context.storage_state())
+    state = normalize_storage_state(_storage_state(context))
     if require_login_cookie and not has_login_cookie(state):
         return False
     write_storage_state(path, state)
@@ -152,7 +165,7 @@ def persist_account_context(context, account_id: str) -> bool:
     """保存账号登录态；默认账号同时维护旧版根目录兼容副本。"""
     from .config import DEFAULT_ACCOUNT_ID, ROOT_STATE_PATH, account_state_path
 
-    state = normalize_storage_state(context.storage_state())
+    state = normalize_storage_state(_storage_state(context))
     if not has_login_cookie(state):
         return False
     write_storage_state(account_state_path(account_id), state)

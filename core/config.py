@@ -34,6 +34,15 @@ def account_state_path(account_id: str | None = None) -> Path:
     return account_dir(account_id) / "state.json"
 
 
+def account_browser_profile_path(account_id: str | None = None) -> Path:
+    """Return the private, per-account Chromium profile directory.
+
+    The profile lives beside the account's state file so it follows the same
+    persistent data volume and is isolated from every other account.
+    """
+    return account_dir(account_id) / "browser-profile"
+
+
 def get_valid_state_path(account_id: str | None = None) -> Path | None:
     """自动兼容并双向自愈检查账号目录 state.json 与根目录 state.json（仅默认账号）。"""
     from .session_state import read_storage_state, write_storage_state

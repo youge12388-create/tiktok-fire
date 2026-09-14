@@ -480,7 +480,7 @@ def fetch_chat_contacts(account_id: str | None = None, supplement: bool = False)
         return result
 
     try:
-        with open_browser(state_path=state) as (p, browser, context, page):
+        with open_browser(state_path=state, account_id=aid) as (p, browser, context, page):
             if not _open_chat_page(page):
                 result["error"] = "无法打开抖音私信页面"
                 return result
@@ -584,7 +584,15 @@ def _send_consumer(page, entry: dict, msg: str, dry_run: bool, result: dict, acc
         ledger.update_send_result(name, status == "ok", _now(), account_id=account_id)
 
 
-def _send_creator(entry: dict, msg: str, dry_run: bool, result: dict, p, account_id: str | None = None) -> None:
+def _send_creator(
+    entry: dict,
+    msg: str,
+    dry_run: bool,
+    result: dict,
+    p,
+    context,
+    account_id: str | None = None,
+) -> None:
     """通道 B：creator 首条消息。"""
     name = entry["display_name"]
     cfg = load_config(account_id)
@@ -602,7 +610,7 @@ def _send_creator(entry: dict, msg: str, dry_run: bool, result: dict, p, account
         })
         return
 
-    ok, why = creator_channel.send_first_message(entry, msg, dry_run, p, account_id)
+    ok, why = creator_channel.send_first_message(entry, msg, dry_run, p, account_id, context)
     if ok:
         result["ok"].append(name)
         logger.info("[%s] 通道 B 已发送给 %s：%s", account_id, name, msg if not dry_run else "(干跑)")
@@ -662,7 +670,7 @@ def run_send(dry_run: bool = False, only_names: list[str] | None = None, account
         return result
 
     try:
-        with open_browser(state_path=state) as (p, browser, context, page):
+        with open_browser(state_path=state, account_id=aid) as (p, browser, context, page):
             if not _open_chat_page(page):
                 result["failed"].append({"name": "_system", "reason": "无法打开抖音私信页面"})
                 return result
@@ -693,7 +701,7 @@ def run_send(dry_run: bool = False, only_names: list[str] | None = None, account
                 if entry.get("has_conversation"):
                     _send_consumer(page, entry, msg, dry_run, result, aid)
                 else:
-                    _send_creator(entry, msg, dry_run, result, p, aid)
+                    _send_creator(entry, msg, dry_run, result, p, context, aid)
 
                 if result["rate_limited"]:
                     break
