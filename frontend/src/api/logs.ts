@@ -6,7 +6,16 @@ export interface RunDetail extends RunRecord {
   items?: RunItem[]
 }
 
-export function listRuns(params: { account_id?: string; status?: string; date?: string; limit?: number; offset?: number }) {
+export interface RunFilters {
+  account_id?: string
+  status?: string
+  date?: string
+  risk?: boolean
+  limit?: number
+  offset?: number
+}
+
+export function listRuns(params: RunFilters) {
   return http.get<{ items: RunRecord[]; total: number }>('/runs', { params })
 }
 

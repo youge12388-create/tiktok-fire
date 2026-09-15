@@ -4,7 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Setting, UserFilled } from '@element-plus/icons-vue'
 import { listAccounts } from '@/api/accounts'
 import { getErrorMessage } from '@/api/errors'
-import { dryRun, getTask, putTask, runTask } from '@/api/tasks'
+import { dryRun, getReconcile, getTask, putTask, retryRun, runTask } from '@/api/tasks'
+import type { ReconcileReport } from '@/api/tasks'
 import type { Account } from '@/types'
 
 const accounts = ref<Account[]>([])
@@ -13,6 +14,8 @@ const messagesText = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const running = ref(false)
+const retrying = ref(false)
+const report = ref<ReconcileReport | null>(null)
 let taskRequestId = 0
 const form = reactive({
   schedule_time: '21:00',
@@ -31,6 +34,19 @@ const canExecute = computed(() => Boolean(
     && currentAccount.value.session_status === 'ok'
     && !currentAccount.value.running
 ))
+
+/** 今日核对摘要：配置前就能看到整份名单是否都续火成功。 */
+const reconcileHint = computed(() => {
+  const r = report.value
+  if (!r || !r.selected_total) return ''
+  if (r.counts.pending === r.selected_total && !r.last_run_at) return `今日尚未执行（已选 ${r.selected_total} 人）`
+  const parts = [`成功 ${r.counts.succeeded}/${r.selected_total}`]
+  if (r.counts.failed) parts.push(`${r.counts.failed} 人失败`)
+  if (r.counts.uncertain) parts.push(`${r.counts.uncertain} 人待确认`)
+  if (r.counts.skipped) parts.push(`${r.counts.skipped} 人跳过`)
+  if (r.counts.pending) parts.push(`${r.counts.pending} 人未执行`)
+  return `今日：${parts.join('，')}`
+})
 
 function accountStatus(account?: Account) {
   if (!account) return { type: 'info', label: '未选择', message: '请选择一个账号' }
@@ -76,6 +92,50 @@ async function loadTask(requestedAccountId = accountId.value) {
     ElMessage.error(getErrorMessage(error, '任务配置加载失败'))
   } finally {
     if (requestId === taskRequestId) loading.value = false
+  }
+}
+
+async function loadReconcile(requestedAccountId = accountId.value) {
+  report.value = null
+  if (!requestedAccountId) return
+  try {
+    const { data } = await getReconcile(requestedAccountId)
+    if (accountId.value !== requestedAccountId) return
+    report.value = data
+  } catch {
+    // 核对信息只是辅助提示，失败不打扰用户。
+    if (accountId.value === requestedAccountId) report.value = null
+  }
+}
+
+/** 只补发今日失败的人，不重发整份名单。 */
+async function retryFailed() {
+  if (!accountId.value || !canExecute.value) {
+    ElMessage.warning(accountStatus(currentAccount.value).message)
+    return
+  }
+  const targets = report.value?.retry_names ?? []
+  if (!targets.length) {
+    ElMessage.info('今日没有确定失败的联系人需要补发')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将只给「${targets.length} 位」续火失败的联系人重发一次：${targets.slice(0, 5).join('、')}${targets.length > 5 ? ' …' : ''}。\n已成功的人不会被重复发送。`,
+      '确认补发',
+      { type: 'warning', confirmButtonText: '确认补发', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  retrying.value = true
+  try {
+    const { data } = await retryRun(accountId.value)
+    ElMessage.success(`已开始补发 ${data.count} 人，可在执行记录中查看`)
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '补发启动失败'))
+  } finally {
+    retrying.value = false
   }
 }
 
@@ -151,8 +211,13 @@ async function doRun() {
   }
 }
 
-watch(accountId, (nextAccountId) => void loadTask(nextAccountId))
-onMounted(loadAccounts)
+watch(accountId, (nextAccountId) => {
+  void loadTask(nextAccountId)
+  void loadReconcile(nextAccountId)
+})
+onMounted(() => {
+  void loadAccounts().then(() => loadReconcile())
+})
 </script>
 
 <template>
@@ -165,6 +230,10 @@ onMounted(loadAccounts)
     <section class="surface account-bar">
       <div><label class="field-label" for="task-account">抖音账号</label><el-select id="task-account" v-model="accountId" placeholder="选择账号"><el-option v-for="account in accounts" :key="account.id" :label="account.display_name || account.name" :value="account.id" /></el-select></div>
       <div v-if="currentAccount" class="account-state"><el-tag :type="accountStatus(currentAccount).type" size="small">{{ accountStatus(currentAccount).label }}</el-tag><span>{{ accountStatus(currentAccount).message }}</span></div>
+      <div v-if="reconcileHint" class="reconcile-hint">
+        <span>{{ reconcileHint }}</span>
+        <el-button v-if="report?.need_retry" link type="primary" size="small" @click="$router.push('/dashboard')">在总览补发</el-button>
+      </div>
     </section>
 
     <div v-if="!accountId" class="surface empty-panel"><el-icon><UserFilled /></el-icon><h3>还没有可配置的账号</h3><p>请先添加账号并完成扫码登录。</p><el-button type="primary" @click="$router.push('/accounts')">去添加账号</el-button></div>
@@ -204,7 +273,7 @@ onMounted(loadAccounts)
 
         <div class="form-actions">
           <span>保存后，新设置会用于下一次任务。</span>
-          <div><el-button :loading="running" :disabled="!canExecute" @click="doDryRun">测试运行</el-button><el-button type="danger" plain :loading="running" :disabled="!canExecute" @click="doRun">立即执行</el-button><el-button type="primary" :loading="saving" @click="save">保存配置</el-button></div>
+          <div><el-button :loading="running" :disabled="!canExecute" @click="doDryRun">测试运行</el-button><el-button v-if="report?.need_retry" type="warning" plain :loading="retrying" :disabled="!canExecute" @click="retryFailed">只补发失败的人 ({{ report.need_retry }})</el-button><el-button type="danger" plain :loading="running" :disabled="!canExecute" @click="doRun">立即执行</el-button><el-button type="primary" :loading="saving" @click="save">保存配置</el-button></div>
         </div>
       </template>
     </section>
@@ -215,6 +284,7 @@ onMounted(loadAccounts)
 .account-bar { display: flex; align-items: flex-end; gap: 20px; margin-bottom: 16px; padding: 16px 20px; }
 .account-bar > div:first-child { width: 240px; }
 .account-state { display: flex; align-items: center; gap: 9px; padding-bottom: 5px; color: var(--color-text-secondary); font-size: 11px; }
+.reconcile-hint { display: flex; align-items: center; gap: 8px; padding-bottom: 5px; margin-left: auto; color: var(--color-text-secondary); font-size: 11px; }
 .config-surface { overflow: visible; }
 .loading-block { padding: 24px; }
 .account-alert { width: auto; margin: 20px 20px 0; }
@@ -239,6 +309,7 @@ onMounted(loadAccounts)
 @media (max-width: 720px) {
   .account-bar { align-items: stretch; flex-direction: column; gap: 10px; }
   .account-bar > div:first-child { width: 100%; }
+  .reconcile-hint { margin-left: 0; }
   .form-grid { grid-template-columns: 1fr; gap: 0; }
   .task-form { padding: 4px 16px 0; }
   .form-actions { align-items: stretch; flex-direction: column; padding: 16px; }

@@ -10,6 +10,7 @@ export interface ContactsResponse {
   contacts_scan_rounds?: number
   contacts_stop_reason?: string | null
   selected_count?: number
+  today_counts?: { succeeded: number; failed: number; uncertain: number; skipped: number; pending: number }
 }
 
 export function listContacts(accountId: string) {

@@ -76,6 +76,18 @@ def test_authenticated_admin_can_send_notification_test(client, monkeypatch):
     monkeypatch.setattr(system_api.notification_service, "dingtalk_configured", lambda: True)
     monkeypatch.setattr(
         system_api.notification_service,
+        "notification_status",
+        lambda: {
+            "configured": True,
+            "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=******",
+            "webhook_url_valid": True,
+            "secret_set": True,
+            "source": "settings",
+            "editable": True,
+        },
+    )
+    monkeypatch.setattr(
+        system_api.notification_service,
         "send_test_notification",
         lambda: (True, "测试消息已发送，请在钉钉群中确认收到"),
     )
@@ -84,7 +96,11 @@ def test_authenticated_admin_can_send_notification_test(client, monkeypatch):
     sent = client.post("/api/v1/system/notifications/test")
 
     assert status.status_code == 200
-    assert status.json() == {"dingtalk": {"configured": True}}
+    dingtalk = status.json()["dingtalk"]
+    assert dingtalk["configured"] is True
+    assert dingtalk["secret_set"] is True
+    # 接口只返回脱敏地址，绝不回显 access_token 明文。
+    assert "******" in dingtalk["webhook_url"]
     assert sent.status_code == 200
     assert sent.json()["ok"] is True
 

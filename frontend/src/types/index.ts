@@ -37,6 +37,10 @@ export interface Contact {
   has_conversation?: boolean
   channel?: string
   identity_ambiguous?: boolean
+  /** 今日实际发送结果：succeeded / failed / uncertain / skipped；空表示今日未执行。 */
+  today_status?: string | null
+  today_reason?: string
+  today_at?: string
 }
 
 export interface RunRecord {

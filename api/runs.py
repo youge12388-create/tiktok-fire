@@ -17,10 +17,23 @@ def list_runs(
     account_id: str | None = None,
     status: str | None = None,
     date: str | None = None,
+    risk: str | None = None,
     limit: int = Query(200, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    return run_service.list_runs(account_id, status, date, limit, offset)
+    # 前端清除筛选时可能送出空串，按「不过滤」处理，避免无意义的 422。
+    return run_service.list_runs(account_id, status, date, limit, offset, _parse_risk(risk))
+
+
+def _parse_risk(value: str | None) -> bool | None:
+    if value is None or value == "":
+        return None
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    raise HTTPException(status_code=422, detail="risk 必须是布尔值")
 
 
 @router.get("/{run_id}")

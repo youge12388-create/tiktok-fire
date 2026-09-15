@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { Bell, CircleCheck, InfoFilled } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import http from '@/api/http'
 import { getErrorMessage } from '@/api/errors'
+import { getNotificationStatus, testNotification, updateNotificationConfig } from '@/api/system'
+import type { NotificationStatus } from '@/api/system'
 
 interface Summary {
   version?: string
@@ -16,10 +18,23 @@ interface Summary {
 const summary = ref<Summary | null>(null)
 const loading = ref(true)
 const errorMessage = ref('')
-const notificationConfigured = ref(false)
+const notification = ref<NotificationStatus | null>(null)
 const notificationLoading = ref(true)
 const notificationError = ref('')
 const notificationTesting = ref(false)
+const savingNotification = ref(false)
+const form = reactive({ webhook_url: '', secret: '' })
+
+const notificationConfigured = computed(() => Boolean(notification.value?.configured))
+const sourceLabel = computed(() => {
+  if (notification.value?.source === 'settings') return '已在后台保存，优先于环境变量'
+  if (notification.value?.source === 'env') return '来自服务器环境变量（可在下方覆盖）'
+  return '尚未配置'
+})
+/** 地址留空的提示：接口只返回脱敏地址，不能把它当新值提交。 */
+const webhookPlaceholder = computed(() => (notification.value?.webhook_url
+  ? `当前：${notification.value.webhook_url}（留空则不修改）`
+  : 'https://oapi.dingtalk.com/robot/send?access_token=...'))
 
 function fmtUptime(seconds?: number) {
   if (seconds == null) return '—'
@@ -45,8 +60,11 @@ async function loadNotificationStatus() {
   notificationLoading.value = true
   notificationError.value = ''
   try {
-    const { data } = await http.get<{ dingtalk?: { configured?: boolean } }>('/system/notifications/status')
-    notificationConfigured.value = Boolean(data.dingtalk?.configured)
+    const { data } = await getNotificationStatus()
+    notification.value = data.dingtalk
+    // 地址与密钥都不回显：留空保存即保持原值，避免把脱敏值写回真正的配置。
+    form.webhook_url = ''
+    form.secret = ''
   } catch (error: unknown) {
     notificationError.value = getErrorMessage(error, '无法读取钉钉告警状态')
   } finally {
@@ -54,10 +72,57 @@ async function loadNotificationStatus() {
   }
 }
 
+async function saveDingtalk() {
+  const webhook = form.webhook_url.trim()
+  if (!webhook && !notification.value?.webhook_url) {
+    ElMessage.warning('请填写钉钉机器人 Webhook 地址')
+    return
+  }
+  savingNotification.value = true
+  try {
+    const { data } = await updateNotificationConfig({
+      webhook_url: webhook || undefined,
+      secret: form.secret.trim() || undefined
+    })
+    notification.value = data.dingtalk
+    form.webhook_url = ''
+    form.secret = ''
+    ElMessage.success('钉钉配置已保存，建议发送一条测试消息确认')
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '钉钉配置保存失败'))
+  } finally {
+    savingNotification.value = false
+  }
+}
+
+async function clearDingtalk() {
+  try {
+    await ElMessageBox.confirm('将清除后台保存的钉钉配置，回退到服务器环境变量。', '清除配置', {
+      type: 'warning',
+      confirmButtonText: '清除',
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return
+  }
+  savingNotification.value = true
+  try {
+    const { data } = await updateNotificationConfig({ clear: true })
+    notification.value = data.dingtalk
+    form.webhook_url = ''
+    form.secret = ''
+    ElMessage.success('已清除后台配置')
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '清除配置失败'))
+  } finally {
+    savingNotification.value = false
+  }
+}
+
 async function testDingtalk() {
   notificationTesting.value = true
   try {
-    const { data } = await http.post<{ message?: string }>('/system/notifications/test')
+    const { data } = await testNotification()
     ElMessage.success(data.message || '测试消息已发送，请检查钉钉群')
   } catch (error: unknown) {
     ElMessage.error(getErrorMessage(error, '钉钉测试消息发送失败'))
@@ -155,7 +220,7 @@ onMounted(() => {
         <span class="notification-icon"><el-icon><Bell /></el-icon></span>
         <div>
           <h2 id="notification-title">账号掉线通知</h2>
-          <p>账号确认退出时，通过钉钉机器人发送一次告警。</p>
+          <p>账号确认退出时，通过钉钉机器人发送一次告警。可直接在下方修改机器人配置。</p>
         </div>
         <el-tag
           v-if="!notificationLoading && !notificationError"
@@ -167,7 +232,7 @@ onMounted(() => {
       </div>
 
       <div v-if="notificationLoading" class="notification-loading">
-        <el-skeleton :rows="1" animated />
+        <el-skeleton :rows="3" animated />
       </div>
       <el-alert
         v-else-if="notificationError"
@@ -177,21 +242,54 @@ onMounted(() => {
         :closable="false"
         show-icon
       />
-      <div v-else class="notification-action">
+      <div v-else class="notification-body">
         <div class="signal-line" :class="{ 'is-ready': notificationConfigured }" aria-hidden="true">
           <i />
           <span>{{ notificationConfigured ? 'DINGTALK ALERT READY' : 'DINGTALK ALERT OFFLINE' }}</span>
         </div>
-        <p v-if="notificationConfigured">发送一条测试消息，确认机器人、加签密钥和群消息接收都正常。</p>
-        <p v-else>请先在服务器环境变量中配置钉钉 Webhook 地址和加签密钥，然后重启服务。</p>
-        <el-button
-          type="primary"
-          :loading="notificationTesting"
-          :disabled="!notificationConfigured"
-          @click="testDingtalk"
-        >
-          发送测试消息
-        </el-button>
+
+        <el-form label-position="top" class="notification-form" @submit.prevent>
+          <el-form-item label="机器人 Webhook 地址">
+            <el-input
+              v-model="form.webhook_url"
+              type="password"
+              show-password
+              autocomplete="off"
+              :placeholder="webhookPlaceholder"
+            />
+            <p class="field-help">从钉钉群机器人设置页复制完整地址（必须包含 access_token）。出于安全考虑，地址与密钥都不会回显；留空保存表示不修改。</p>
+          </el-form-item>
+          <el-form-item label="加签密钥">
+            <el-input
+              v-model="form.secret"
+              type="password"
+              show-password
+              autocomplete="new-password"
+              :placeholder="notification?.secret_set ? '已设置，留空表示不修改' : '填写机器人「加签」安全设置里的密钥'"
+            />
+            <p class="field-help">留空保存时保持原密钥不变。</p>
+          </el-form-item>
+        </el-form>
+
+        <p class="config-source">当前来源：{{ sourceLabel }}</p>
+        <p class="notification-hint">
+          {{ notificationConfigured
+            ? '保存后建议发送一条测试消息，确认机器人、加签密钥和群消息接收都正常。'
+            : '填写地址和加签密钥并保存后即可发送测试消息。' }}
+        </p>
+
+        <div class="notification-actions">
+          <el-button v-if="notification?.source === 'settings'" @click="clearDingtalk">清除后台配置</el-button>
+          <el-button :loading="savingNotification" @click="saveDingtalk">保存配置</el-button>
+          <el-button
+            type="primary"
+            :loading="notificationTesting"
+            :disabled="!notificationConfigured"
+            @click="testDingtalk"
+          >
+            发送测试消息
+          </el-button>
+        </div>
       </div>
     </section>
   </div>
@@ -223,7 +321,7 @@ onMounted(() => {
 }
 
 .notification-heading p,
-.notification-action p {
+.notification-body p {
   margin: 5px 0 0;
   color: var(--color-text-secondary);
   font-size: 13px;
@@ -248,17 +346,42 @@ onMounted(() => {
 
 .notification-loading,
 .notification-alert,
-.notification-action {
+.notification-body {
   margin-top: 20px;
   padding-top: 18px;
   border-top: 1px solid var(--color-border);
 }
 
-.notification-action {
+.notification-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  column-gap: 24px;
+  gap: 4px;
+}
+
+.notification-form {
+  margin-top: 14px;
+}
+
+.notification-form :deep(.el-input) {
+  max-width: 520px;
+}
+
+.field-help,
+.config-source {
+  margin: 6px 0 0;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.notification-hint {
+  margin-top: 2px;
+}
+
+.notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .signal-line {
@@ -402,13 +525,17 @@ code {
     flex: 0 0 auto;
   }
 
-  .notification-action {
-    grid-template-columns: 1fr;
+  .notification-form :deep(.el-input) {
+    max-width: none;
   }
 
-  .notification-action .el-button {
+  .notification-actions {
+    flex-direction: column;
+  }
+
+  .notification-actions .el-button {
     width: 100%;
-    margin-top: 16px;
+    margin-left: 0;
   }
 
   .info-list {

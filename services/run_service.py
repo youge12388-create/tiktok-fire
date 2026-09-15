@@ -154,6 +154,14 @@ def record_run(
                 run_id, account_id, str(item["name"]), "failed",
                 error=str(item.get("reason", "")), message_preview=message,
             )
+    for item in result.get("skipped", []):
+        if isinstance(item, dict):
+            run_repo.add_run_item(
+                run_id, account_id, str(item.get("name", "")), "skipped",
+                error=str(item.get("reason", "")), message_preview=message,
+            )
+        else:
+            run_repo.add_run_item(run_id, account_id, str(item), "skipped", message_preview=message)
     for item in result.get("uncertain", []):
         if isinstance(item, dict):
             run_repo.add_run_item(
@@ -166,11 +174,18 @@ def record_run(
     return run_id
 
 
-def list_runs(account_id: str | None = None, status: str | None = None, date: str | None = None, limit: int = 200, offset: int = 0) -> dict:
-    items = run_repo.list_runs(account_id, status, date, limit, offset)
+def list_runs(
+    account_id: str | None = None,
+    status: str | None = None,
+    date: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    risk: bool | None = None,
+) -> dict:
+    items = run_repo.list_runs(account_id, status, date, limit, offset, risk)
     for it in items:
         it["artifact"] = artifact_path(it.get("account_id"), it.get("started_at"), it["id"]).exists()
-    total = run_repo.count_runs(account_id, status, date)
+    total = run_repo.count_runs(account_id, status, date, risk)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
@@ -181,5 +196,5 @@ def get_run(run_id: int) -> dict | None:
     return rec
 
 
-def today_counts() -> dict:
-    return run_repo.today_counts()
+def today_counts(account_id: str | None = None, date: str | None = None) -> dict:
+    return run_repo.today_counts(account_id, date)

@@ -7,28 +7,42 @@ from core.config import load_config, save_config
 from core.runtime import load_runtime, update_runtime
 from core.runtime import record_contacts as rt_record_contacts
 
+from . import reconcile_service
 from .douyin import douyin
 from .notification_service import report_session_expired
 from .state import contacts_fetching
 
 
 def list_contacts(account_id: str) -> dict:
-    """联系人列表：以好友台账为准（同步后的权威数据），附带勾选/会话/通道状态。"""
+    """联系人列表：以好友台账为准（同步后的权威数据），附带勾选/会话/通道/今日结果。"""
     rt = load_runtime(account_id)
+    outcomes = reconcile_service.outcome_map(account_id)
     contacts: list[dict] = []
     for e in ledger.load_ledger(account_id):
         streak = str(e.get("streak_days") or "") or ""
+        name = e.get("display_name", "")
+        outcome = outcomes.get(name) or {}
         contacts.append({
-            "id": e.get("contact_key") or f"name:{e.get('display_name', '')}",
-            "name": e.get("display_name", ""),
+            "id": e.get("contact_key") or f"name:{name}",
+            "name": name,
             "streak": streak,
             "avatar": e.get("avatar") or "",
             "selected": bool(e.get("selected")),
             "has_conversation": bool(e.get("has_conversation")),
             "channel": e.get("channel") or "none",
             "identity_ambiguous": bool(e.get("identity_ambiguous")),
+            "today_status": outcome.get("status"),
+            "today_reason": outcome.get("reason") or "",
+            "today_at": outcome.get("at") or "",
         })
-    selected_count = sum(1 for c in contacts if c["selected"])
+    selected = [c for c in contacts if c["selected"]]
+    today_counts = {
+        "succeeded": sum(1 for c in selected if c["today_status"] == "succeeded"),
+        "failed": sum(1 for c in selected if c["today_status"] == "failed"),
+        "uncertain": sum(1 for c in selected if c["today_status"] == "uncertain"),
+        "skipped": sum(1 for c in selected if c["today_status"] == "skipped"),
+        "pending": sum(1 for c in selected if not c["today_status"]),
+    }
     return {
         "contacts": contacts,
         "contacts_at": rt.get("contacts_at"),
@@ -39,7 +53,8 @@ def list_contacts(account_id: str) -> dict:
         "contacts_stop_reason": rt.get("contacts_stop_reason"),
         "contacts_scan_mode": rt.get("contacts_scan_mode"),
         "fetching": account_id in contacts_fetching,
-        "selected_count": selected_count,
+        "selected_count": len(selected),
+        "today_counts": today_counts,
         "account_id": account_id,
     }
 

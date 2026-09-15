@@ -6,6 +6,8 @@ import { listAccounts } from '@/api/accounts'
 import { withAppBasePath } from '@/api/base'
 import { continueSyncContacts, deleteAllContacts, deleteContacts, listContacts, setContactsSelection, syncContacts } from '@/api/contacts'
 import { getErrorMessage } from '@/api/errors'
+import { getReconcile, retryRun } from '@/api/tasks'
+import { statusMeta } from '@/composables/useReconcile'
 import type { Account, Contact } from '@/types'
 
 type CheckableContact = Contact & { checked: boolean }
@@ -18,7 +20,9 @@ const loading = ref(false)
 const syncing = ref(false)
 const deletingAll = ref(false)
 const selectionSaving = ref(false)
+const retrying = ref('')
 const syncSummary = ref<{ complete?: boolean | null; warning?: string | null }>({})
+const todayCounts = ref<{ succeeded: number; failed: number; uncertain: number; skipped: number; pending: number } | null>(null)
 let timer: number | undefined
 let contactsRequestId = 0
 
@@ -34,12 +38,28 @@ const filtered = computed(() => {
   return contacts.value.filter((contact) => (contact.name || '').toLowerCase().includes(search))
 })
 const selectedCount = computed(() => contacts.value.filter((contact) => contact.checked).length)
+const selectedContacts = computed(() => contacts.value.filter((contact) => contact.checked))
 const syncStatus = computed(() => {
   if (syncSummary.value.complete === true) return ' · 已完整同步'
   if (syncSummary.value.complete === false) return ' · 同步未确认完整，可继续补充扫描'
   return ''
 })
 const needsSupplement = computed(() => Boolean(canSync.value && syncSummary.value.complete === false))
+
+/** 今日核对摘要：只统计当前勾选的人。 */
+const todaySummary = computed(() => {
+  const counts = todayCounts.value
+  if (!counts || !selectedCount.value) return ''
+  if (!counts.succeeded && !counts.failed && !counts.uncertain && !counts.skipped) return ' · 今日尚未执行'
+  const parts = [`今日成功 ${counts.succeeded}/${selectedCount.value}`]
+  if (counts.failed) parts.push(`${counts.failed} 人失败`)
+  if (counts.uncertain) parts.push(`${counts.uncertain} 人待确认`)
+  if (counts.skipped) parts.push(`${counts.skipped} 人跳过`)
+  if (counts.pending) parts.push(`${counts.pending} 人未执行`)
+  return ` · ${parts.join('，')}`
+})
+const retryableCount = computed(() => selectedContacts.value.filter((c) => c.today_status === 'failed').length)
+const canRetry = computed(() => Boolean(currentAccount.value?.enabled && currentAccount.value.session_status === 'ok' && !currentAccount.value.running))
 
 function accountStatus(account?: Account) {
   if (!account) return { label: '未选择', type: 'info' }
@@ -48,6 +68,12 @@ function accountStatus(account?: Account) {
   if (['expired', 'failed', 'invalid'].includes(account.session_status || '')) return { label: '需重新登录', type: 'danger' }
   if (account.session_status === 'unknown') return { label: '待检测', type: 'warning' }
   return { label: '正常', type: 'success' }
+}
+
+/** 未勾选的人不参与今日核对，避免误导。 */
+function todayStatus(contact: CheckableContact) {
+  if (!contact.checked) return null
+  return statusMeta(contact.today_status ?? undefined)
 }
 
 async function loadAccounts() {
@@ -64,6 +90,7 @@ async function loadContacts(requestedAccountId = accountId.value) {
   const requestId = ++contactsRequestId
   if (!requestedAccountId) {
     contacts.value = []
+    todayCounts.value = null
     loading.value = false
     return
   }
@@ -75,6 +102,7 @@ async function loadContacts(requestedAccountId = accountId.value) {
       ...contact,
       checked: !!contact.selected
     }))
+    todayCounts.value = data.today_counts || null
     syncSummary.value = {
       complete: data.contacts_complete,
       warning: data.contacts_warning
@@ -87,6 +115,10 @@ async function loadContacts(requestedAccountId = accountId.value) {
   } finally {
     if (requestId === contactsRequestId) loading.value = false
   }
+}
+
+async function refreshTodayStatus() {
+  loadContacts()
 }
 
 async function doSync(mode: 'initial' | 'supplement' = 'initial') {
@@ -166,6 +198,7 @@ async function saveSelection() {
       .filter((contact) => contact.checked)
       .map((contact) => contact.id)
     await setContactsSelection(accountId.value, names, contactKeys)
+    await refreshTodayStatus()
   } catch (error: unknown) {
     ElMessage.error(getErrorMessage(error, '联系人选择保存失败'))
     await loadContacts()
@@ -182,6 +215,41 @@ async function selectAll() {
 async function clearAll() {
   contacts.value.forEach((contact) => (contact.checked = false))
   await saveSelection()
+}
+
+/** 补发：只给指定的人重发；不传名单时补发今日确定失败且已勾选的人。 */
+async function retryFailed(names?: string[]) {
+  if (!accountId.value || retrying.value) return
+  if (!canRetry.value) {
+    ElMessage.warning('账号未登录或正在执行，无法补发')
+    return
+  }
+  const { data: report } = await getReconcile(accountId.value).catch(() => ({ data: null }))
+  const targets = names?.length ? names : (report?.retry_names ?? []).filter((name) => contacts.value.some((c) => c.name === name && c.checked))
+  if (!targets.length) {
+    ElMessage.info('今日没有确定失败的联系人需要补发')
+    return
+  }
+  const preview = targets.slice(0, 5).join('、')
+  try {
+    await ElMessageBox.confirm(
+      `将只给「${targets.length} 位」续火失败的联系人重发一次：${preview}${targets.length > 5 ? ' …' : ''}。\n已成功的人不会被重复发送。`,
+      '确认补发',
+      { type: 'warning', confirmButtonText: '确认补发', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
+  retrying.value = names?.[0] || '__all__'
+  try {
+    const { data } = await retryRun(accountId.value, names)
+    ElMessage.success(`已开始补发 ${data.count} 人`)
+    await loadContacts()
+  } catch (error: unknown) {
+    ElMessage.error(getErrorMessage(error, '补发启动失败'))
+  } finally {
+    retrying.value = ''
+  }
 }
 
 async function removeContact(contact: Contact) {
@@ -254,8 +322,13 @@ onUnmounted(stopPolling)
       </div>
 
       <div class="section-header">
-        <div><h2 class="section-title">续火联系人</h2><p class="section-description">已选 {{ selectedCount }} / {{ contacts.length }}{{ selectionSaving ? ' · 正在保存' : '' }}{{ syncStatus }}</p></div>
-        <div class="bulk-actions"><el-button text size="small" :disabled="!contacts.length || selectionSaving || syncing || deletingAll" @click="selectAll">全选</el-button><el-button text size="small" :disabled="!contacts.length || selectionSaving || syncing || deletingAll" @click="clearAll">清空</el-button><el-button text type="danger" size="small" :loading="deletingAll" :disabled="!contacts.length || selectionSaving || syncing" @click="removeAllContacts">删除全部</el-button></div>
+        <div><h2 class="section-title">续火联系人</h2><p class="section-description">已选 {{ selectedCount }} / {{ contacts.length }}{{ selectionSaving ? ' · 正在保存' : '' }}{{ todaySummary || syncStatus }}</p></div>
+        <div class="bulk-actions">
+          <el-button v-if="retryableCount" text type="primary" size="small" :loading="retrying === '__all__'" :disabled="!canRetry" @click="retryFailed()">补发失败 ({{ retryableCount }})</el-button>
+          <el-button text size="small" :disabled="!contacts.length || selectionSaving || syncing || deletingAll" @click="selectAll">全选</el-button>
+          <el-button text size="small" :disabled="!contacts.length || selectionSaving || syncing || deletingAll" @click="clearAll">清空</el-button>
+          <el-button text type="danger" size="small" :loading="deletingAll" :disabled="!contacts.length || selectionSaving || syncing" @click="removeAllContacts">删除全部</el-button>
+        </div>
       </div>
 
       <el-skeleton v-if="loading" :rows="6" animated class="loading-block" />
@@ -265,7 +338,33 @@ onUnmounted(stopPolling)
         <el-table-column prop="name" label="联系人" min-width="180" />
         <el-table-column label="火花" width="120"><template #default="{ row }">{{ row.streak || '—' }}</template></el-table-column>
         <el-table-column label="任务状态" width="130"><template #default="{ row }"><el-tag v-if="row.checked" type="success" size="small">已加入</el-tag><span v-else class="muted-state">未选择</span></template></el-table-column>
-        <el-table-column label="操作" width="72" align="center"><template #default="{ row }"><el-button text type="danger" :icon="Delete" aria-label="删除联系人" :disabled="selectionSaving || syncing || deletingAll" @click="removeContact(row)" /></template></el-table-column>
+        <el-table-column label="今日结果" width="150">
+          <template #default="{ row }">
+            <template v-if="todayStatus(row)">
+              <el-tooltip v-if="row.today_reason" :content="row.today_reason" placement="top">
+                <el-tag :type="todayStatus(row)!.tag" size="small">{{ todayStatus(row)!.label }}</el-tag>
+              </el-tooltip>
+              <el-tag v-else :type="todayStatus(row)!.tag" size="small">{{ todayStatus(row)!.label }}</el-tag>
+            </template>
+            <span v-else class="muted-state">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="132" align="center">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.checked && todayStatus(row)?.retryable"
+              text
+              type="primary"
+              size="small"
+              :loading="retrying === row.name"
+              :disabled="!canRetry"
+              @click="retryFailed([row.name])"
+            >
+              补发
+            </el-button>
+            <el-button text type="danger" :icon="Delete" aria-label="删除联系人" :disabled="selectionSaving || syncing || deletingAll" @click="removeContact(row)" />
+          </template>
+        </el-table-column>
       </el-table>
 
       <div v-else-if="!accountId" class="empty-panel"><el-icon><UserFilled /></el-icon><h3>请先选择账号</h3><p>选择一个已登录的账号后，可以同步联系人。</p><el-button @click="$router.push('/accounts')">去账号管理</el-button></div>

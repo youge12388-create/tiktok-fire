@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from core import scheduler
+from core import ledger, scheduler
 from core.config import DEFAULT_CONFIG, load_config, save_config
 
+from . import reconcile_service
 from .task_runtime import request_stop, start_run
+
+_MAX_NAME_LENGTH = 200
 
 
 def get_task(account_id: str) -> dict:
@@ -36,6 +39,41 @@ def dry_run(account_id: str) -> dict:
 def run(account_id: str) -> dict:
     start_run(account_id, dry=False)
     return {"started": True}
+
+
+def _dedupe_names(names: list[str] | None) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in names or []:
+        name = str(raw).strip()
+        if not name:
+            continue
+        if len(name) > _MAX_NAME_LENGTH:
+            raise ValueError(f"联系人名称过长：{name[:20]}…")
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+def retry(account_id: str, names: list[str] | None = None, date: str | None = None) -> dict:
+    """只补发指定联系人；不传 names 时补发「今日确定失败且仍在勾选名单中」的人。
+
+    补发集合始终与当前勾选名单取交集——避免重发整份名单，也避免给已移除的人发送。
+    不在名单中的请求会被明确回报（skipped），不静默忽略。
+    """
+    selected = {str(e.get("display_name") or "").strip() for e in ledger.get_selected(account_id)}
+    requested = _dedupe_names(names) if names else reconcile_service.retry_candidates(account_id, date)
+    targets = [name for name in requested if name in selected]
+    skipped = [name for name in requested if name not in selected]
+    if not targets:
+        raise ValueError("没有可补发的联系人：今日没有确定失败的记录，或这些人已不在勾选名单中")
+    start_run(account_id, dry=False, only_names=targets)
+    return {"started": True, "count": len(targets), "names": targets, "skipped": skipped}
+
+
+def reconcile(account_id: str, date: str | None = None) -> dict:
+    return reconcile_service.account_report(account_id, date)
 
 
 def stop(account_id: str) -> dict:
