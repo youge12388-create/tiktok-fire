@@ -240,8 +240,11 @@ def contact_outcomes(account_id: str | None = None, date: str | None = None) -> 
     for row in rows:
         item = dict(row)
         key = (item["account_id"], item["friend_name"])
-        # 按 id 倒序遍历：先出现的即当天最后一次结果。
-        if key not in latest:
+        # 按 id 倒序遍历：通常先出现的即当天最后一次结果。
+        # 一旦当天已经确认成功，后续误触发的 skip/failed 不能把成功覆盖掉，
+        # 否则总览会再次显示“未续上”并诱导重复发送。
+        previous = latest.get(key)
+        if previous is None or (item.get("status") == "success" and previous.get("status") != "success"):
             latest[key] = item
     return list(latest.values())
 

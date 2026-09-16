@@ -25,6 +25,8 @@ def _summary(a: dict) -> dict:
         "state_file_exists": get_valid_state_path(aid) is not None,
         "douyin_nickname": rt.get("douyin_nickname") or "",
         "display_name": rt.get("douyin_nickname") or a["name"],
+        "login_checked_at": rt.get("login_checked_at"),
+        "login_check_reason": rt.get("login_check_reason") or "",
         "auto_run_enabled": bool(load_config(aid).get("auto_run_enabled", True)),
         "selected_count": len(ledger.get_selected(aid)),
     }

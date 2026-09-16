@@ -60,8 +60,8 @@ def test_report_separates_success_failure_and_pending():
     assert report["counts"]["failed"] == 1
     # 丙今天没有发送记录，应显示为「未执行」而不是成功。
     assert report["counts"]["pending"] == 1
-    assert report["need_retry"] == 1
-    assert report["retry_names"] == ["乙"]
+    assert report["need_retry"] == 2
+    assert report["retry_names"] == ["乙", "丙"]
     assert report["failed"][0]["name"] == "乙"
     assert "找不到聊天输入框" in report["failed"][0]["reason"]
 
@@ -80,9 +80,9 @@ def test_retry_only_targets_failed_contacts(monkeypatch):
 
     result = spark_service.retry(ACCOUNT)
 
-    # 只补发确定失败的人，成功的「甲」和未执行的「丙」都不在名单里。
-    assert captured["only_names"] == ["乙"]
-    assert result["count"] == 1
+    # 补发确定失败与漏执行的人，成功的「甲」不在名单里。
+    assert captured["only_names"] == ["乙", "丙"]
+    assert result["count"] == 2
     assert result["started"] is True
 
 
@@ -133,6 +133,27 @@ def test_latest_result_wins_when_contact_retried():
     assert report["counts"]["succeeded"] == 1
     assert report["counts"]["failed"] == 0
     assert report["need_retry"] == 0
+
+
+def test_success_is_sticky_when_later_retry_is_skipped():
+    _seed_selection(["甲"])
+    _add_run(["甲"], [])
+    rid = repo.create_run(ACCOUNT, "spark", "success", _now(), _now(), 0, 0, False, None)
+    repo.add_run_item(rid, ACCOUNT, "甲", "skipped", error="补发时已无需发送")
+
+    report = reconcile_service.account_report(ACCOUNT)
+
+    assert report["counts"]["succeeded"] == 1
+    assert report["counts"]["skipped"] == 0
+
+
+def test_explicit_retry_does_not_resend_successful_contact(monkeypatch):
+    _seed_selection(["甲"])
+    _add_run(["甲"], [])
+    monkeypatch.setattr(spark_service, "start_run", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("不应启动补发")))
+
+    with pytest.raises(ValueError, match="没有可补发"):
+        spark_service.retry(ACCOUNT, ["甲"])
 
 
 def test_skipped_contacts_are_persisted_and_reported(monkeypatch):

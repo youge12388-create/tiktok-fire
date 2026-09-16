@@ -52,6 +52,33 @@ def test_login_recovery_rearms_next_expired_notification(monkeypatch):
     assert notification_service.report_session_expired(account_id, "再次失效") is True
 
 
+def test_failed_notification_can_retry_after_backoff(monkeypatch):
+    monkeypatch.setattr(app_config, "DINGTALK_WEBHOOK_URL", "https://example.test/robot/send?access_token=token")
+    monkeypatch.setattr(app_config, "DINGTALK_SECRET", "SEC-not-a-real-secret")
+    outcomes = iter([False, True])
+    monkeypatch.setattr(notification_service, "_post_dingtalk", lambda _content: next(outcomes))
+
+    account_id = "notification-delivery-retry"
+    notification_service.report_session_ok(account_id)
+    assert notification_service.report_session_expired(account_id, "首次投递失败") is False
+    # 模拟退避时间已到；失败不应永久锁死后续巡检。
+    from core import runtime
+
+    runtime.update_runtime(account_id, login_expired_alert={"active": True, "delivered": False, "retry_after": 0, "attempts": 1})
+    assert notification_service.report_session_expired(account_id, "巡检再次发现掉线") is True
+
+
+def test_inflight_notification_is_deduplicated(monkeypatch):
+    monkeypatch.setattr(app_config, "DINGTALK_WEBHOOK_URL", "https://example.test/robot/send?access_token=token")
+    monkeypatch.setattr(app_config, "DINGTALK_SECRET", "SEC-not-a-real-secret")
+    monkeypatch.setattr(notification_service, "_post_dingtalk", lambda _content: True)
+
+    account_id = "notification-inflight"
+    notification_service.report_session_ok(account_id)
+    assert notification_service.claim_login_expired_alert(account_id, "并发巡检") is True
+    assert notification_service.claim_login_expired_alert(account_id, "并发巡检") is False
+
+
 def test_notification_test_message_uses_configured_channel_without_dedupe(monkeypatch):
     monkeypatch.setattr(app_config, "DINGTALK_WEBHOOK_URL", "https://example.test/robot/send?access_token=token")
     monkeypatch.setattr(app_config, "DINGTALK_SECRET", "SEC-not-a-real-secret")

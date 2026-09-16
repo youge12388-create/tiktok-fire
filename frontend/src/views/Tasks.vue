@@ -108,7 +108,7 @@ async function loadReconcile(requestedAccountId = accountId.value) {
   }
 }
 
-/** 只补发今日失败的人，不重发整份名单。 */
+/** 只补发今日失败或漏执行的人，不重发整份名单。 */
 async function retryFailed() {
   if (!accountId.value || !canExecute.value) {
     ElMessage.warning(accountStatus(currentAccount.value).message)
@@ -116,12 +116,12 @@ async function retryFailed() {
   }
   const targets = report.value?.retry_names ?? []
   if (!targets.length) {
-    ElMessage.info('今日没有确定失败的联系人需要补发')
+    ElMessage.info('今日没有失败或漏执行的联系人需要补发')
     return
   }
   try {
     await ElMessageBox.confirm(
-      `将只给「${targets.length} 位」续火失败的联系人重发一次：${targets.slice(0, 5).join('、')}${targets.length > 5 ? ' …' : ''}。\n已成功的人不会被重复发送。`,
+      `将只给「${targets.length} 位」失败或漏执行的联系人重发一次：${targets.slice(0, 5).join('、')}${targets.length > 5 ? ' …' : ''}。\n已成功的人不会被重复发送。`,
       '确认补发',
       { type: 'warning', confirmButtonText: '确认补发', cancelButtonText: '取消' }
     )
@@ -273,7 +273,7 @@ onMounted(() => {
 
         <div class="form-actions">
           <span>保存后，新设置会用于下一次任务。</span>
-          <div><el-button :loading="running" :disabled="!canExecute" @click="doDryRun">测试运行</el-button><el-button v-if="report?.need_retry" type="warning" plain :loading="retrying" :disabled="!canExecute" @click="retryFailed">只补发失败的人 ({{ report.need_retry }})</el-button><el-button type="danger" plain :loading="running" :disabled="!canExecute" @click="doRun">立即执行</el-button><el-button type="primary" :loading="saving" @click="save">保存配置</el-button></div>
+          <div><el-button :loading="running" :disabled="!canExecute" @click="doDryRun">测试运行</el-button><el-button v-if="report?.need_retry" type="warning" plain :loading="retrying" :disabled="!canExecute" @click="retryFailed">只补发失败/漏发 ({{ report.need_retry }})</el-button><el-button type="danger" plain :loading="running" :disabled="!canExecute" @click="doRun">立即执行</el-button><el-button type="primary" :loading="saving" @click="save">保存配置</el-button></div>
         </div>
       </template>
     </section>

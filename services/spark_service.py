@@ -57,17 +57,26 @@ def _dedupe_names(names: list[str] | None) -> list[str]:
 
 
 def retry(account_id: str, names: list[str] | None = None, date: str | None = None) -> dict:
-    """只补发指定联系人；不传 names 时补发「今日确定失败且仍在勾选名单中」的人。
+    """只补发指定联系人；不传 names 时补发「今日失败或漏执行」的人。
 
     补发集合始终与当前勾选名单取交集——避免重发整份名单，也避免给已移除的人发送。
     不在名单中的请求会被明确回报（skipped），不静默忽略。
     """
     selected = {str(e.get("display_name") or "").strip() for e in ledger.get_selected(account_id)}
     requested = _dedupe_names(names) if names else reconcile_service.retry_candidates(account_id, date)
-    targets = [name for name in requested if name in selected]
-    skipped = [name for name in requested if name not in selected]
+    report = reconcile_service.account_report(account_id, date)
+    status_by_name = {str(item.get("name") or "").strip(): item.get("status") for item in report.get("contacts", [])}
+    # 补发前重新核对，避免用户在失败记录产生后手动发送成功，随后又被补发一遍。
+    targets = [
+        name for name in requested
+        if name in selected and status_by_name.get(name, "pending") != "succeeded"
+    ]
+    skipped = [
+        name for name in requested
+        if name not in selected or status_by_name.get(name) == "succeeded"
+    ]
     if not targets:
-        raise ValueError("没有可补发的联系人：今日没有确定失败的记录，或这些人已不在勾选名单中")
+        raise ValueError("没有可补发的联系人：今日没有失败/漏执行记录，或这些人已成功、取消勾选")
     start_run(account_id, dry=False, only_names=targets)
     return {"started": True, "count": len(targets), "names": targets, "skipped": skipped}
 

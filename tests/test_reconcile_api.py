@@ -109,14 +109,15 @@ def test_retry_endpoint_starts_only_named_contacts(client, account_id, monkeypat
     assert captured["only_names"] == ["乙"]
 
 
-def test_retry_endpoint_reports_nothing_to_retry(client, account_id):
+def test_retry_endpoint_includes_unexecuted_selected_contact(client, account_id):
     ledger.set_selected([{"display_name": "甲", "selected": True, "selected_order": 0}], account_id)
     _login(client)
 
     response = client.post(f"/api/v1/accounts/{account_id}/spark-task/retry", json={})
 
-    assert response.status_code == 400
-    assert "没有可补发" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert response.json()["names"] == ["甲"]
 
 
 def test_runs_endpoint_supports_risk_filter(client, account_id):

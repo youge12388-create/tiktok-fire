@@ -13,9 +13,11 @@ from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from .accounts import list_accounts
 from .config import DEFAULT_ACCOUNT_ID, load_config
+from .runtime import load_runtime
 
 logger = logging.getLogger("douyin-cloud-streak")
 TZ = "Asia/Shanghai"
@@ -24,6 +26,8 @@ _scheduler: BackgroundScheduler | None = None
 _scheduler_ready = False
 _run_func: Callable | None = None
 _harvest_func: Callable | None = None
+_login_check_func: Callable | None = None
+_retry_func: Callable | None = None
 
 
 def _job_id(account_id: str, kind: str) -> str:
@@ -92,11 +96,23 @@ def _harvest_job(account_id: str) -> None:
         _harvest_func(account_id=account_id)
 
 
-def configure(run_func: Callable, harvest_func: Callable | None = None) -> None:
-    """注册每日发送任务与（可选）周级 creator 采集任务，按账号逐个注册。"""
-    global _scheduler, _scheduler_ready, _run_func, _harvest_func
+def _login_check_job(account_id: str) -> None:
+    if _login_check_func and _account_enabled(account_id):
+        _login_check_func(account_id=account_id)
+
+
+def configure(
+    run_func: Callable,
+    harvest_func: Callable | None = None,
+    login_check_func: Callable | None = None,
+    retry_func: Callable | None = None,
+) -> None:
+    """注册每日发送、登录巡检与（可选）周级 creator 采集任务。"""
+    global _scheduler, _scheduler_ready, _run_func, _harvest_func, _login_check_func, _retry_func
     _run_func = run_func
     _harvest_func = harvest_func
+    _login_check_func = login_check_func
+    _retry_func = retry_func
     try:
         if _scheduler is None:
             _scheduler = BackgroundScheduler(timezone=TZ)
@@ -142,7 +158,7 @@ def _apply_schedule(account_id: str | None = None) -> None:
         accounts = [a for a in accounts if a["id"] == account_id]
     if not accounts:
         if account_id is not None:
-            for kind in ("daily_send", "weekly_harvest", "retry"):
+            for kind in ("daily_send", "weekly_harvest", "login_check", "retry"):
                 _remove_job(_job_id(account_id, kind))
             logger.info("[%s] 账号不存在，关联调度任务已移除", account_id)
         return
@@ -152,6 +168,7 @@ def _apply_schedule(account_id: str | None = None) -> None:
         if not acc.get("enabled", True):
             _remove_job(_job_id(aid, "daily_send"))
             _remove_job(_job_id(aid, "weekly_harvest"))
+            _remove_job(_job_id(aid, "login_check"))
             _remove_job(_job_id(aid, "retry"))
             logger.info("[%s] 账号已停用，定时任务已移除", aid)
             continue
@@ -174,6 +191,24 @@ def _apply_schedule(account_id: str | None = None) -> None:
             _remove_job(_job_id(aid, "daily_send"))
             _remove_job(_job_id(aid, "retry"))
             logger.info("[%s] 自动运行已关闭，已移除每日定时任务", aid)
+
+        if _login_check_func:
+            _scheduler.add_job(
+                _login_check_job,
+                IntervalTrigger(minutes=15, timezone=TZ),
+                args=[aid],
+                id=_job_id(aid, "login_check"),
+                replace_existing=True,
+                coalesce=True,
+                misfire_grace_time=300,
+            )
+        else:
+            _remove_job(_job_id(aid, "login_check"))
+
+        # 服务重启后恢复尚未执行的补发；实际名单仍会在回调中重新核对。
+        pending = load_runtime(aid).get("retry_pending") or {}
+        if _retry_func and pending.get("date") == datetime.now().astimezone().date().isoformat():
+            schedule_retry(lambda aid=aid: _retry_func(account_id=aid), delay_minutes=0, account_id=aid)
 
         # 周级 creator 抖音号采集（默认周一 03:00；off/空 = 关闭）
         day = str(cfg.get("schedule_harvest_day") or "off").strip().lower()
@@ -234,7 +269,7 @@ def schedule_retry(run_func: Callable, delay_minutes: int = 45, account_id: str 
         id=job_id,
         replace_existing=True,
     )
-    logger.info("[%s] 已安排 %s 分钟后自动补发本次失败的好友", aid, delay_minutes)
+    logger.info("[%s] 已安排 %s 分钟后自动补发本次失败或漏执行的联系人", aid, delay_minutes)
 
 
 def _retry_job(account_id: str, run_func: Callable) -> None:

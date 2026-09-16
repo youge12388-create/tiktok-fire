@@ -57,10 +57,17 @@ def test_only_deterministic_failure_allows_retry():
     assert task_runtime._retry_allowed(result) is True
 
 
+def test_unexecuted_selected_contact_allows_retry(monkeypatch):
+    monkeypatch.setattr("services.reconcile_service.retry_candidates", lambda *_a, **_k: ["甲"])
+    result = {"failed": [], "uncertain": [], "risk_detected": False, "rate_limited": False, "logged_out": False, "stopped": False}
+
+    assert task_runtime._retry_allowed(result, "acc_1") is True
+
+
 def test_retry_is_limited_to_once_per_day(monkeypatch):
     scheduled: list[str] = []
     today = datetime.now().date().isoformat()
-    monkeypatch.setattr(task_runtime, "load_runtime", lambda account_id: {"retry_date": today})
+    monkeypatch.setattr(task_runtime, "load_runtime", lambda account_id: {"retry_date": today, "retry_attempts": task_runtime.MAX_AUTO_RETRY_ATTEMPTS})
     monkeypatch.setattr(
         task_runtime.scheduler,
         "schedule_retry",
@@ -70,6 +77,37 @@ def test_retry_is_limited_to_once_per_day(monkeypatch):
     task_runtime._schedule_retry("acc_1", {"failed": [{"name": "甲"}]})
 
     assert scheduled == []
+
+
+def test_retry_persists_failed_and_unexecuted_names(monkeypatch):
+    scheduled: list[tuple[str, object]] = []
+    state: dict = {}
+    monkeypatch.setattr(task_runtime, "load_runtime", lambda _account_id: dict(state))
+    monkeypatch.setattr(task_runtime, "update_runtime", lambda _account_id, **fields: state.update(fields))
+    monkeypatch.setattr(task_runtime.scheduler, "is_running", lambda: True)
+    monkeypatch.setattr(task_runtime.scheduler, "schedule_retry", lambda run_func, account_id, **_kwargs: scheduled.append((account_id, run_func)))
+    monkeypatch.setattr("services.reconcile_service.retry_candidates", lambda *_a, **_k: ["乙"])
+
+    task_runtime._schedule_retry("acc_1", {"failed": [{"name": "甲"}]})
+
+    assert state["retry_pending"]["names"] == ["甲", "乙"]
+    assert [item[0] for item in scheduled] == ["acc_1"]
+
+
+def test_retry_allows_second_attempt_with_longer_delay(monkeypatch):
+    today = datetime.now().date().isoformat()
+    state = {"retry_date": today, "retry_attempts": 1}
+    scheduled: list[int] = []
+    monkeypatch.setattr(task_runtime, "load_runtime", lambda _account_id: dict(state))
+    monkeypatch.setattr(task_runtime, "update_runtime", lambda _account_id, **fields: state.update(fields))
+    monkeypatch.setattr(task_runtime.scheduler, "is_running", lambda: True)
+    monkeypatch.setattr(task_runtime.scheduler, "schedule_retry", lambda _run_func, delay_minutes, account_id: scheduled.append(delay_minutes))
+    monkeypatch.setattr("services.reconcile_service.retry_candidates", lambda *_a, **_k: ["甲"])
+
+    task_runtime._schedule_retry("acc_1", {"failed": [{"name": "甲"}]})
+
+    assert state["retry_attempts"] == 2
+    assert scheduled == [45]
 
 
 @pytest.mark.parametrize("account_state", [[], [{"id": "acc_1", "enabled": False}]])

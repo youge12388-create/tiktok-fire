@@ -34,7 +34,12 @@ from app_config import (
 from core import accounts, scheduler
 from core.runtime import recover_stale_running, setup_logging
 from db import init_db
-from services.task_runtime import _scheduled_run, start_harvest_creator
+from services.task_runtime import (
+    _scheduled_retry_run,
+    _scheduled_run,
+    start_harvest_creator,
+    start_login_check,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
@@ -131,6 +136,8 @@ async def lifespan(_app: FastAPI):
         scheduler.configure(
             _scheduled_run,
             harvest_func=lambda account_id: start_harvest_creator(account_id),
+            login_check_func=lambda account_id: start_login_check(account_id),
+            retry_func=lambda account_id: _scheduled_retry_run(account_id),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("调度器启动失败: %s", exc)

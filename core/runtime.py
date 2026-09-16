@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections import deque
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -125,18 +126,32 @@ def update_runtime(account_id: str | None = None, **fields) -> None:
     _mutate(account_id, lambda rt: rt.update(fields))
 
 
+LOGIN_ALERT_RETRY_SECONDS = 5 * 60
+
+
 def claim_login_expired_alert(account_id: str, reason: str) -> bool:
-    """原子地领取一次登录失效告警，防止并发任务重复通知。"""
+    """原子领取一次登录失效告警。
+
+    已成功投递的告警继续去重；投递失败只进入短暂退避窗口，后续巡检可以
+    自动重试，避免“第一次网络抖动后永久静默”。
+    """
     claimed = False
+    now = time.time()
 
     def update(rt: dict) -> None:
         nonlocal claimed
         alert = rt.get("login_expired_alert") or {}
-        if alert.get("active"):
+        if alert.get("active") and alert.get("delivered"):
+            return
+        if alert.get("active") and float(alert.get("retry_after") or 0) > now:
             return
         rt["login_expired_alert"] = {
             "active": True,
             "reason": str(reason)[:300],
+            "attempts": int(alert.get("attempts") or 0) + 1,
+            "last_attempt_at": now,
+            # 在 HTTP 请求返回前也保持短暂占位，避免并发巡检重复投递。
+            "retry_after": now + LOGIN_ALERT_RETRY_SECONDS,
         }
         claimed = True
 
@@ -145,11 +160,12 @@ def claim_login_expired_alert(account_id: str, reason: str) -> bool:
 
 
 def finish_login_expired_alert(account_id: str, delivered: bool) -> None:
-    """记录告警尝试结果；即使投递失败也保持 active，避免反复轰炸。"""
+    """记录告警投递结果；失败时保留 retry_after 供后续巡检重试。"""
     def update(rt: dict) -> None:
         alert = rt.get("login_expired_alert") or {}
         if alert.get("active"):
             alert["delivered"] = bool(delivered)
+            alert["retry_after"] = 0 if delivered else time.time() + LOGIN_ALERT_RETRY_SECONDS
             rt["login_expired_alert"] = alert
 
     _mutate(account_id, update)

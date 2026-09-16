@@ -58,7 +58,7 @@ const todaySummary = computed(() => {
   if (counts.pending) parts.push(`${counts.pending} 人未执行`)
   return ` · ${parts.join('，')}`
 })
-const retryableCount = computed(() => selectedContacts.value.filter((c) => c.today_status === 'failed').length)
+const retryableCount = computed(() => selectedContacts.value.filter((c) => ['failed', 'pending'].includes(c.today_status || 'pending')).length)
 const canRetry = computed(() => Boolean(currentAccount.value?.enabled && currentAccount.value.session_status === 'ok' && !currentAccount.value.running))
 
 function accountStatus(account?: Account) {
@@ -217,7 +217,7 @@ async function clearAll() {
   await saveSelection()
 }
 
-/** 补发：只给指定的人重发；不传名单时补发今日确定失败且已勾选的人。 */
+/** 补发：只给指定的人重发；不传名单时补发今日失败或漏执行且已勾选的人。 */
 async function retryFailed(names?: string[]) {
   if (!accountId.value || retrying.value) return
   if (!canRetry.value) {
@@ -227,13 +227,13 @@ async function retryFailed(names?: string[]) {
   const { data: report } = await getReconcile(accountId.value).catch(() => ({ data: null }))
   const targets = names?.length ? names : (report?.retry_names ?? []).filter((name) => contacts.value.some((c) => c.name === name && c.checked))
   if (!targets.length) {
-    ElMessage.info('今日没有确定失败的联系人需要补发')
+    ElMessage.info('今日没有失败或漏执行的联系人需要补发')
     return
   }
   const preview = targets.slice(0, 5).join('、')
   try {
     await ElMessageBox.confirm(
-      `将只给「${targets.length} 位」续火失败的联系人重发一次：${preview}${targets.length > 5 ? ' …' : ''}。\n已成功的人不会被重复发送。`,
+      `将只给「${targets.length} 位」失败或漏执行的联系人重发一次：${preview}${targets.length > 5 ? ' …' : ''}。\n已成功的人不会被重复发送。`,
       '确认补发',
       { type: 'warning', confirmButtonText: '确认补发', cancelButtonText: '取消' }
     )
@@ -324,7 +324,7 @@ onUnmounted(stopPolling)
       <div class="section-header">
         <div><h2 class="section-title">续火联系人</h2><p class="section-description">已选 {{ selectedCount }} / {{ contacts.length }}{{ selectionSaving ? ' · 正在保存' : '' }}{{ todaySummary || syncStatus }}</p></div>
         <div class="bulk-actions">
-          <el-button v-if="retryableCount" text type="primary" size="small" :loading="retrying === '__all__'" :disabled="!canRetry" @click="retryFailed()">补发失败 ({{ retryableCount }})</el-button>
+          <el-button v-if="retryableCount" text type="primary" size="small" :loading="retrying === '__all__'" :disabled="!canRetry" @click="retryFailed()">补发失败/漏发 ({{ retryableCount }})</el-button>
           <el-button text size="small" :disabled="!contacts.length || selectionSaving || syncing || deletingAll" @click="selectAll">全选</el-button>
           <el-button text size="small" :disabled="!contacts.length || selectionSaving || syncing || deletingAll" @click="clearAll">清空</el-button>
           <el-button text type="danger" size="small" :loading="deletingAll" :disabled="!contacts.length || selectionSaving || syncing" @click="removeAllContacts">删除全部</el-button>

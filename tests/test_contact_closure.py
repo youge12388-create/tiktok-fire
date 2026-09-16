@@ -220,6 +220,30 @@ def test_legacy_duplicate_is_removed_when_stable_contact_already_exists(fresh_ac
     assert contacts[0]["selected"] is True
 
 
+def test_fallback_contact_key_migrates_when_avatar_fingerprint_changes(fresh_account):
+    """头像 CDN 地址变化不应把同一联系人重新添加一遍。"""
+    ledger.merge_consumer_contacts(
+        [{"name": "头像变化", "streak": "8", "sync_key": "fallback:头像变化|avatar:old"}],
+        fresh_account,
+    )
+    ledger.set_selected(
+        [{"display_name": "头像变化", "contact_key": "sync:fallback:头像变化|avatar:old", "selected": True}],
+        fresh_account,
+    )
+
+    stats = ledger.merge_consumer_contacts(
+        [{"name": "头像变化", "streak": "9", "sync_key": "fallback:头像变化|avatar:new"}],
+        fresh_account,
+    )
+
+    contacts = contact_service.list_contacts(fresh_account)["contacts"]
+    assert stats["migrated"] == 1
+    assert stats["added"] == 0
+    assert len(contacts) == 1
+    assert contacts[0]["id"] == "sync:fallback:头像变化|avatar:new"
+    assert contacts[0]["selected"] is True
+
+
 def test_api_selection_delete_and_autorun(client):
     client.post("/api/v1/auth/login", json={"username": "admin", "password": PWD})
 

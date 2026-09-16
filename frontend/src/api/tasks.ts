@@ -97,7 +97,7 @@ export function getReconcile(accountId: string, date?: string) {
   return http.get<ReconcileReport>(`/accounts/${accountId}/spark-task/reconcile`, { params: date ? { date } : {} })
 }
 
-/** 只补发指定联系人；不传 names 时补发今日确定失败的人。 */
+/** 只补发指定联系人；不传 names 时补发今日失败或漏执行的人。 */
 export function retryRun(accountId: string, names?: string[]) {
   return http.post<RetryResult>(`/accounts/${accountId}/spark-task/retry`, names?.length ? { names } : {})
 }

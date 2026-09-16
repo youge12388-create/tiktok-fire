@@ -17,6 +17,7 @@ from .state import acquire_lock, contacts_fetching, harvesting, lock_for
 
 logger = logging.getLogger("douyin-cloud-streak")
 _harvest_guard = threading.Lock()
+MAX_AUTO_RETRY_ATTEMPTS = 2
 
 
 def _ensure_account_enabled(account_id: str) -> None:
@@ -141,7 +142,7 @@ def _run_worker(
 
         try:
             # 结果落库失败时无法确认本轮实际发送结果，禁止自动补发，避免重复触达。
-            if not dry and persisted and _retry_allowed(result):
+            if not dry and persisted and _retry_allowed(result, account_id):
                 _schedule_retry(account_id, result)
             elif not dry:
                 scheduler.cancel_retry(account_id)
@@ -162,19 +163,51 @@ def _schedule_retry(account_id: str, result: dict) -> None:
         for f in result.get("failed", [])
         if isinstance(f, dict) and isinstance(f.get("name"), str) and f["name"] != "_system"
     ]
-    if not failed_names:
+    # 任务上限、手动停止前的剩余名单不会出现在 failed 明细里；持久化后重新
+    # 对账，把这些 pending 联系人也纳入自动补发。
+    from . import reconcile_service
+
+    retry_names = list(dict.fromkeys(failed_names + reconcile_service.retry_candidates(account_id)))
+    if not retry_names:
+        return
+    # 调度器未就绪时不能消耗当天补发额度；服务恢复后由人工/下一轮任务重新计算。
+    if not scheduler.is_running():
+        logger.warning("[%s] 调度器未就绪，暂不登记自动补发", account_id)
         return
     rt = load_runtime(account_id)
-    today = datetime.now().date().isoformat()
+    today = datetime.now().astimezone().date().isoformat()
     if rt.get("retry_date") == today:
-        logger.info("[%s] 今日已安排过自动补发，不再重复安排", account_id)
+        # 旧版本只保存 retry_date，视为当天的补发额度已经用完，避免升级后
+        # 因缺少 attempts 字段突然多发一轮。
+        attempts = int(rt.get("retry_attempts") or MAX_AUTO_RETRY_ATTEMPTS)
+    else:
+        attempts = 0
+    if attempts >= MAX_AUTO_RETRY_ATTEMPTS:
+        logger.info("[%s] 今日自动补发已达到 %s 次上限", account_id, MAX_AUTO_RETRY_ATTEMPTS)
         return
-    update_runtime(account_id, retry_date=today)
-    scheduler.schedule_retry(lambda: _scheduled_run(account_id, failed_names), account_id=account_id)
+    next_attempt = attempts + 1
+    delay_minutes = 15 if next_attempt == 1 else 45
+    update_runtime(
+        account_id,
+        retry_date=today,
+        retry_attempts=next_attempt,
+        retry_pending={
+            "date": today,
+            "names": retry_names,
+            "attempts": next_attempt,
+            "scheduled_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        },
+    )
+    # 触发时重新从当天核对报表取名单，排除这段时间内已经成功的人。
+    scheduler.schedule_retry(
+        lambda: _scheduled_retry_run(account_id),
+        delay_minutes=delay_minutes,
+        account_id=account_id,
+    )
 
 
-def _retry_allowed(result: dict) -> bool:
-    """仅确定性的普通失败允许自动补发；安全或结果不确定时必须人工处理。"""
+def _retry_allowed(result: dict, account_id: str | None = None) -> bool:
+    """仅确定性的普通失败/漏执行允许自动补发；安全或结果不确定时人工处理。"""
     unsafe = (
         result.get("risk_detected")
         or result.get("rate_limited")
@@ -182,7 +215,12 @@ def _retry_allowed(result: dict) -> bool:
         or result.get("stopped")
         or result.get("uncertain")
     )
-    return bool(result.get("failed")) and not bool(unsafe)
+    pending = False
+    if account_id:
+        from . import reconcile_service
+
+        pending = bool(reconcile_service.retry_candidates(account_id))
+    return (bool(result.get("failed")) or pending) and not bool(unsafe)
 
 
 def _scheduled_run(account_id: str, only_names: list[str] | None = None) -> None:
@@ -191,6 +229,61 @@ def _scheduled_run(account_id: str, only_names: list[str] | None = None) -> None
         start_run(account_id, dry=False, only_names=only_names)
     except Exception as exc:  # noqa: BLE001
         logger.exception("[%s] 定时任务触发失败: %s", account_id, exc)
+
+
+def _scheduled_retry_run(account_id: str) -> None:
+    """自动补发回调：执行前重新核对，避免重发已成功联系人。"""
+    from . import reconcile_service
+
+    try:
+        names = reconcile_service.retry_candidates(account_id)
+        if not names:
+            update_runtime(account_id, retry_pending=None)
+            scheduler.cancel_retry(account_id)
+            logger.info("[%s] 自动补发触发时已无失败或漏执行联系人", account_id)
+            return
+        start_run(account_id, dry=False, only_names=names)
+        update_runtime(account_id, retry_pending=None)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[%s] 自动补发触发失败: %s", account_id, exc)
+
+
+def start_login_check(account_id: str) -> bool:
+    """启动一次后台登录巡检；与发送/同步共用账号锁，避免抢占浏览器。"""
+    _ensure_account_enabled(account_id)
+    if not acquire_lock(account_id):
+        return False
+    try:
+        _ensure_account_enabled(account_id)
+    except Exception:
+        lock_for(account_id).release()
+        raise
+    try:
+        threading.Thread(target=_login_check_worker, args=(account_id,), daemon=True).start()
+        return True
+    except Exception:
+        lock_for(account_id).release()
+        raise
+
+
+def _login_check_worker(account_id: str) -> None:
+    try:
+        result = douyin.check_login_status(account_id)
+        update_runtime(
+            account_id,
+            login_checked_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            login_check_reason=str(result.get("reason") or ""),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[%s] 登录巡检异常: %s", account_id, exc)
+        update_runtime(
+            account_id,
+            login_checked_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            login_check_reason=f"巡检异常: {exc}",
+            session_status="unknown",
+        )
+    finally:
+        lock_for(account_id).release()
 
 
 def start_fetch_contacts(account_id: str, mode: str = "initial") -> bool:

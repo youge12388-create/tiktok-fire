@@ -131,14 +131,14 @@ async function stopNow(account: Account) {
 async function retryContacts(account: AccountReconcile, names?: string[]) {
   const targets = names?.length ? names : account.retry_names
   if (!targets.length) {
-    ElMessage.info('该账号今日没有需要补发的联系人')
+    ElMessage.info('该账号今日没有失败或漏执行的联系人需要补发')
     return
   }
   const preview = targets.slice(0, 5).join('、')
   const more = targets.length > 5 ? ` 等 ${targets.length} 人` : ''
   try {
     await ElMessageBox.confirm(
-      `将只给「${targets.length} 位」续火未成功的联系人重发一次：${preview}${more}。\n已成功的人不会被重复发送。`,
+      `将只给「${targets.length} 位」失败或漏执行的联系人重发一次：${preview}${more}。\n已成功的人不会被重复发送。`,
       '确认补发',
       { type: 'warning', confirmButtonText: '确认补发', cancelButtonText: '取消' }
     )
@@ -256,7 +256,7 @@ onMounted(load)
           <h2 class="section-title">今日续火核对</h2>
           <p class="section-description">
             按当前勾选名单核对今天的实际发送结果。已选 {{ reconcileTotals?.selected ?? 0 }} 人，
-            成功 {{ reconcileTotals?.succeeded ?? 0 }} 人<template v-if="reconcileTotals?.need_retry">，失败 {{ reconcileTotals.need_retry }} 人待补发</template>。
+            成功 {{ reconcileTotals?.succeeded ?? 0 }} 人<template v-if="reconcileTotals?.need_retry">，失败或漏发 {{ reconcileTotals.need_retry }} 人待补发</template>。
           </p>
         </div>
         <el-button size="small" :loading="loading" @click="load">重新核对</el-button>
@@ -282,7 +282,7 @@ onMounted(load)
                 :loading="retryingAccount === account.account_id"
                 @click="retryContacts(account)"
               >
-                补发失败 {{ account.need_retry ? `(${account.need_retry})` : '' }}
+                补发失败/漏发 {{ account.need_retry ? `(${account.need_retry})` : '' }}
               </el-button>
             </div>
 

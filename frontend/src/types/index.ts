@@ -8,6 +8,8 @@ export interface Account {
   dir?: string
   is_default?: boolean
   session_status?: string
+  login_checked_at?: string | null
+  login_check_reason?: string
   running?: boolean
   state_file_exists?: boolean
   created_at?: string

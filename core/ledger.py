@@ -222,14 +222,23 @@ def merge_consumer_contacts(contacts: list[dict], account_id: str | None = None)
     contact_name_counts = Counter(norm for _contact, _name, norm in accepted)
 
     def _migrate_unique_legacy_entry(name: str, contact_key: str) -> bool:
-        """把唯一的旧名称键收敛到当前稳定键，绝不合并同名多会话。"""
+        """把唯一的旧/降级键收敛到当前稳定键，绝不合并同名多会话。
+
+        抖音页面没有暴露会话 ID 时，扫描脚本会用头像路径生成 fallback 指纹。
+        头像 CDN 地址变化不代表联系人变化，因此唯一的旧 fallback 记录也必须
+        迁移到本次扫描键，否则同步一次就会制造一条重复联系人。
+        """
         normalized_name = _norm_ws(name)
-        if contact_key == f"name:{name}" or contact_name_counts[normalized_name] != 1:
+        if contact_name_counts[normalized_name] != 1:
             return False
         legacy_entries = [
             entry for entry in entries
-            if entry.get("contact_key", f"name:{entry.get('display_name', '')}") == f"name:{name}"
-            and _norm_ws(entry.get("display_name", "")) == normalized_name
+            if _norm_ws(entry.get("display_name", "")) == normalized_name
+            and entry.get("contact_key", f"name:{entry.get('display_name', '')}") != contact_key
+            and (
+                entry.get("contact_key", f"name:{entry.get('display_name', '')}") == f"name:{name}"
+                or str(entry.get("contact_key") or "").startswith("sync:")
+            )
         ]
         if len(legacy_entries) != 1:
             return False

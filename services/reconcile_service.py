@@ -24,8 +24,9 @@ _ITEM_TO_BUCKET = {
     "skipped": "skipped",
 }
 BUCKETS = ("succeeded", "failed", "uncertain", "skipped", "pending")
-# 自动/一键补发只处理「确定失败」；待确认可能已经送达，交给人工按需单独补发。
-RETRY_BUCKETS = ("failed",)
+# 自动补发处理确定失败与“今天尚未执行”的联系人；待确认可能已经送达，
+# 交给人工按需单独补发，跳过通常是业务规则或风控拦截，也不自动重试。
+RETRY_BUCKETS = ("failed", "pending")
 
 
 def today() -> str:

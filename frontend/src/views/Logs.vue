@@ -130,12 +130,12 @@ async function retryItem(row: LogRow, item: RunItem) {
   }
 }
 
-/** 按整条记录补发：补发该账号今日确定失败的人。 */
+/** 按整条记录补发：补发该账号今日失败或漏执行的人。 */
 async function retryRunFailures(row: LogRow) {
   try {
     await ElMessageBox.confirm(
-      '将补发该账号今日确定失败的联系人（已成功的人不会重复发送）。',
-      '确认补发失败的人',
+      '将补发该账号今日失败或漏执行的联系人（已成功的人不会重复发送）。',
+      '确认补发失败/漏发的人',
       { type: 'warning', confirmButtonText: '确认补发', cancelButtonText: '取消' }
     )
   } catch {

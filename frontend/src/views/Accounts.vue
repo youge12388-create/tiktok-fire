@@ -131,8 +131,10 @@ function accountDisplayName(account: Account) {
 }
 
 function accountDetail(account: Account) {
-  if (account.douyin_nickname && account.douyin_nickname !== account.name) return `备注：${account.name}`
-  return account.device || account.id
+  const base = account.douyin_nickname && account.douyin_nickname !== account.name
+    ? `备注：${account.name}`
+    : (account.device || account.id)
+  return account.login_checked_at ? `${base} · 最近巡检 ${fmtTime(account.login_checked_at)}` : base
 }
 
 function scanLabel(status: string) {
