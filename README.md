@@ -146,7 +146,7 @@ npm run build
 | `db/` | SQLite 初始化与运行记录仓储 |
 | `frontend/` | Vue 3 管理后台 |
 | `deploy/` | Nginx、可选 GHCR 与传统部署辅助文件 |
-| `docs/` | 用户文档、验收说明和部署指南 |
+| `docs/` | 部署指南与界面截图 |
 | `tests/` | 后端回归测试 |
 
 ## 使用边界
