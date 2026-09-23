@@ -102,3 +102,13 @@ def test_notification_test_message_reports_missing_configuration(monkeypatch):
 
     assert ok is False
     assert "未完整配置" in message
+
+
+def test_test_process_never_holds_a_live_dingtalk_channel():
+    """测试进程必须没有可用的告警通道，否则临时账号的判定会真的投递到生产告警群。"""
+    account_id = "no-live-dingtalk-channel"
+    notification_service.report_session_ok(account_id)
+
+    assert notification_service.dingtalk_configured() is False
+    assert notification_service.report_session_expired(account_id, "测试进程不应投递告警") is False
+    assert not load_runtime(account_id).get("login_expired_alert")

@@ -109,15 +109,26 @@ def test_retry_endpoint_starts_only_named_contacts(client, account_id, monkeypat
     assert captured["only_names"] == ["乙"]
 
 
-def test_retry_endpoint_includes_unexecuted_selected_contact(client, account_id):
+def test_retry_endpoint_includes_unexecuted_selected_contact(client, account_id, monkeypatch):
     ledger.set_selected([{"display_name": "甲", "selected": True, "selected_order": 0}], account_id)
     _login(client)
+    captured: dict = {}
+
+    # 必须替换 start_run：真实启动会让这个没有登录态的测试账号触发掉线告警并投递到真实钉钉群。
+    def fake_start_run(target, dry=False, only_names=None):
+        captured["only_names"] = only_names
+        return True
+
+    from services import spark_service
+
+    monkeypatch.setattr(spark_service, "start_run", fake_start_run)
 
     response = client.post(f"/api/v1/accounts/{account_id}/spark-task/retry", json={})
 
     assert response.status_code == 200
     assert response.json()["count"] == 1
     assert response.json()["names"] == ["甲"]
+    assert captured["only_names"] == ["甲"]
 
 
 def test_runs_endpoint_supports_risk_filter(client, account_id):
