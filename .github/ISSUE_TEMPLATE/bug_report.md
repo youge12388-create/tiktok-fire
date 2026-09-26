@@ -20,6 +20,7 @@ assignees: ''
 - 运行模式: [如 Web 控制台 / CLI 命令行 / 云端 systemd]
 
 **错误日志截图/输出**
+提交前请删掉 Cookie、登录二维码、手机号、联系人姓名、Webhook、服务器地址和密钥；安全漏洞请按 [SECURITY.md](../../SECURITY.md) 私下反馈。
 ```
 在这里粘贴终端日志输出
 ```

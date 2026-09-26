@@ -1,7 +1,13 @@
 # 隐私保护：禁止将敏感数据打入镜像
 data/
 .env
+**/.env.*
+!.env.example
 state.json
+config.json
+*.pem
+*.key
+*.p12
 .agent/
 .tmp/
 .impeccable/
@@ -24,6 +30,7 @@ logs/
 frontend/node_modules/
 frontend/dist/
 .venv/
+.ruff_cache/
 
 # Python 缓存
 __pycache__/

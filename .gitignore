@@ -30,25 +30,22 @@ venv/
 env/
 ENV/
 
-# 敏感登录凭证与台账数据 (绝对禁止上传！)
+# 敏感登录凭证与台账数据
 state.json
-data/*.json
-!data/.gitkeep
-data/*.pid
-data/*.log
-data/logs/
-data/accounts/
-data/archived/
-data/avatars/
-data/artifacts/
-data/app.db
-data/app.db-*
+data/
 .env
+.env.*
+!.env.example
+config.json
+*.pem
+*.key
+*.p12
 frontend/node_modules/
 frontend/dist/
 frontend/.env.local
 pytest_cache/
 .pytest_cache/
+.ruff_cache/
 tests/_tmp_data/
 
 # 临时日志与异常截图

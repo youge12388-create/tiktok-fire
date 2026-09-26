@@ -127,7 +127,7 @@ onUnmounted(() => window.removeEventListener('resize', onResize))
 .sidebar-foot strong { font-size: 11px; font-weight: 650; }
 .sidebar-foot small { margin-top: 3px; color: var(--color-sidebar-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; letter-spacing: 0.08em; }
 .content-area { min-width: 0; flex: 1; }
-.workbench-wave { z-index: -1; --digital-wave-background: transparent; opacity: 0.84; }
+.workbench-wave { z-index: -1; --digital-wave-background: transparent; opacity: 0.28; }
 .topbar { position: sticky; z-index: 10; top: 0; display: flex; height: 72px; align-items: center; justify-content: space-between; padding: 0 36px; border-bottom: 1px solid var(--color-glass-border); background: var(--color-topbar); background-image: var(--color-glass-sheen); box-shadow: inset 0 1px 0 var(--color-glass-highlight), 0 10px 30px rgba(0, 0, 0, 0.08); }
 .topbar-title { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 700; }
 .user-area { display: flex; align-items: center; gap: 8px; }
