@@ -4,6 +4,8 @@
 
 一个自托管的抖音私信续火管理后台：多个账号的登录态、联系人勾选、定时发送、结果核对与失败补发，都集中在一个网页控制台里完成。
 
+本项目基于 [@Yuriz132 的 douyin-cloud-streak](https://github.com/Yuriz132/douyin-cloud-streak) 二次开发。感谢原作者开源；原项目的版权声明和 MIT 许可已保留在 [LICENSE](LICENSE) 中。
+
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11-3776ab.svg)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ed.svg)](compose.yml)
