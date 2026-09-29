@@ -523,6 +523,11 @@ def fetch_chat_contacts(account_id: str | None = None, supplement: bool = False)
 # ── 通道选择 ───────────────────────────────────────────────────────────────
 
 
+def _sent_ok_today(entry: dict, today: str) -> bool:
+    """该好友今天是否已真实发送成功（dry run 不写台账，不影响此判定）。"""
+    return bool(entry.get("last_send_ok")) and str(entry.get("last_sent_at") or "")[:10] == today
+
+
 def _b_channel_daily(account_id: str | None = None) -> tuple[str, int]:
     """通道 B 今日已发条数：优先 runtime 计数，跨天自动归零。"""
     today = datetime.now().astimezone().date().isoformat()
@@ -539,9 +544,12 @@ def compute_pending(cfg: dict | None = None, account_id: str | None = None) -> l
     daily_limit = max(1, int(cfg.get("first_message_daily_limit", 1) or 1))
     _, creator_sent_today = _b_channel_daily(account_id)
     allow_first = bool(cfg.get("allow_first_message"))
+    today = datetime.now().astimezone().date().isoformat()
     pending: list[dict] = []
     for e in entries:
         if e.get("identity_ambiguous"):
+            continue
+        if _sent_ok_today(e, today):
             continue
         if e.get("has_conversation"):
             pending.append({**e, "send_channel": "consumer"})
@@ -663,10 +671,26 @@ def run_send(dry_run: bool = False, only_names: list[str] | None = None, account
         targets = ledger.get_selected(aid)
     if only_names is not None:
         targets = [t for t in targets if t.get("display_name") in only_names]
+    if not dry_run:
+        # 当日已成功发送过的好友自动跳过，避免手动补跑与定时任务叠加成重复发送。
+        today = datetime.now().astimezone().date().isoformat()
+        pending_targets: list[dict] = []
+        for t in targets:
+            if _sent_ok_today(t, today):
+                result["skipped"].append({
+                    "name": t.get("display_name", ""),
+                    "reason": "今日已成功发送，自动跳过",
+                })
+            else:
+                pending_targets.append(t)
+        skipped_today = len(targets) - len(pending_targets)
+        if skipped_today:
+            logger.info("[%s] %s 人今日已成功发送，自动跳过", aid, skipped_today)
+        targets = pending_targets
     targets = targets[:max_n] if max_n > 0 else targets
 
     if not targets:
-        logger.info("[%s] 未配置任何好友，跳过发送", aid)
+        logger.info("[%s] 无可发送对象（名单为空或今日均已成功发送），跳过本轮", aid)
         return result
 
     try:

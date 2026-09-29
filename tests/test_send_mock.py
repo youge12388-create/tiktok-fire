@@ -1,4 +1,8 @@
-from core import automation
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+
+from core import automation, ledger
 
 
 class MockLocator:
@@ -122,3 +126,121 @@ def test_next_gap_within_range():
     # §36 随机延迟范围：相邻好友之间等待秒数应落在 [gap_min, gap_max]
     values = [automation._next_gap(6, 12) for _ in range(200)]
     assert all(6 <= v <= 12 for v in values)
+
+
+def _sent_ok_entry(name: str) -> dict:
+    today = datetime.now().astimezone().date().isoformat()
+    return {
+        "display_name": name,
+        "has_conversation": True,
+        "last_send_ok": True,
+        "last_sent_at": f"{today}T08:00:00+08:00",
+    }
+
+
+def test_run_send_skips_contacts_already_sent_today(monkeypatch):
+    entries = [_sent_ok_entry("甲"), _sent_ok_entry("乙")]
+
+    @contextmanager
+    def _no_browser(*_args, **_kwargs):
+        raise AssertionError("全员今日已发送时不应打开浏览器")
+        yield
+
+    monkeypatch.setattr(automation, "get_valid_state_path", lambda _aid: Path("state.json"))
+    monkeypatch.setattr(automation.ledger, "get_selected", lambda _aid: entries)
+    monkeypatch.setattr(automation, "open_browser", _no_browser)
+
+    result = automation.run_send(account_id="default")
+
+    assert result["ok"] == []
+    assert [s["name"] for s in result["skipped"]] == ["甲", "乙"]
+    assert all("今日已成功发送" in s["reason"] for s in result["skipped"])
+
+
+def test_run_send_dry_run_does_not_skip_sent_contacts(monkeypatch):
+    entries = [_sent_ok_entry("甲"), _sent_ok_entry("乙")]
+    processed: list[str] = []
+
+    @contextmanager
+    def _fake_browser(*_args, **_kwargs):
+        yield None, None, None, object()
+
+    monkeypatch.setattr(automation, "get_valid_state_path", lambda _aid: Path("state.json"))
+    monkeypatch.setattr(automation.ledger, "get_selected", lambda _aid: entries)
+    monkeypatch.setattr(automation, "open_browser", _fake_browser)
+    monkeypatch.setattr(automation, "_open_chat_page", lambda _page: True)
+    monkeypatch.setattr(automation.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(automation, "check_login", lambda _page: (True, "ok"))
+    monkeypatch.setattr(automation, "refresh_authenticated_state", lambda _ctx, _state: True)
+    monkeypatch.setattr(
+        automation,
+        "_send_consumer",
+        lambda _page, entry, _msg, _dry, _result, _aid=None: processed.append(entry["display_name"]),
+    )
+
+    result = automation.run_send(dry_run=True, account_id="default")
+
+    assert processed == ["甲", "乙"]
+    assert result["skipped"] == []
+
+
+def test_run_send_real_run_processes_only_unsent_contacts(monkeypatch):
+    failed_today = {
+        "display_name": "乙",
+        "has_conversation": True,
+        "last_send_ok": False,
+        "last_sent_at": f"{datetime.now().astimezone().date().isoformat()}T09:00:00+08:00",
+    }
+    entries = [_sent_ok_entry("甲"), failed_today]
+    processed: list[str] = []
+
+    @contextmanager
+    def _fake_browser(*_args, **_kwargs):
+        yield None, None, None, object()
+
+    monkeypatch.setattr(automation, "get_valid_state_path", lambda _aid: Path("state.json"))
+    monkeypatch.setattr(automation.ledger, "get_selected", lambda _aid: entries)
+    monkeypatch.setattr(automation, "open_browser", _fake_browser)
+    monkeypatch.setattr(automation, "_open_chat_page", lambda _page: True)
+    monkeypatch.setattr(automation.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(automation, "check_login", lambda _page: (True, "ok"))
+    monkeypatch.setattr(automation, "refresh_authenticated_state", lambda _ctx, _state: True)
+    monkeypatch.setattr(
+        automation,
+        "_send_consumer",
+        lambda _page, entry, _msg, _dry, _result, _aid=None: processed.append(entry["display_name"]),
+    )
+
+    result = automation.run_send(account_id="default")
+
+    assert processed == ["乙"]
+    assert [s["name"] for s in result["skipped"]] == ["甲"]
+
+
+def test_compute_pending_excludes_already_sent_today(monkeypatch):
+    stale_ok = {
+        "display_name": "丙",
+        "has_conversation": True,
+        "last_send_ok": True,
+        "last_sent_at": "2020-01-01T08:00:00+08:00",
+    }
+    entries = [_sent_ok_entry("甲"), {"display_name": "乙", "has_conversation": True}, stale_ok]
+    monkeypatch.setattr(automation.ledger, "get_selected", lambda _aid: entries)
+
+    pending = automation.compute_pending({"allow_first_message": False}, account_id="default")
+
+    assert [p["display_name"] for p in pending] == ["乙", "丙"]
+
+
+def test_update_send_result_records_ok_flag():
+    ledger.import_config_friends(["去重测试甲"], "default")
+
+    ledger.update_send_result("去重测试甲", True, at="2026-09-29T08:00:00+08:00", account_id="default")
+    entry = next(e for e in ledger.load_ledger("default") if e["display_name"] == "去重测试甲")
+    assert entry["last_send_ok"] is True
+    assert entry["last_sent_at"] == "2026-09-29T08:00:00+08:00"
+
+    ledger.update_send_result("去重测试甲", False, at="2026-09-29T09:00:00+08:00", account_id="default")
+    entry = next(e for e in ledger.load_ledger("default") if e["display_name"] == "去重测试甲")
+    assert entry["last_send_ok"] is False
+    assert entry["last_sent_at"] == "2026-09-29T09:00:00+08:00"
