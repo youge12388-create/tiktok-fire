@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
 import time
 from datetime import datetime, timedelta
@@ -21,6 +22,23 @@ from .runtime import load_runtime
 
 logger = logging.getLogger("douyin-cloud-streak")
 TZ = "Asia/Shanghai"
+DEFAULT_LOGIN_CHECK_MINUTES = 60
+
+
+def _login_check_interval_minutes() -> int:
+    """登录巡检间隔（分钟）。可用环境变量 LOGIN_CHECK_INTERVAL_MINUTES 调整。
+
+    巡检每轮都会真实打开一次抖音页面，间隔过短会显著放大风控压力，
+    默认放宽到 60 分钟。
+    """
+    raw = (os.getenv("LOGIN_CHECK_INTERVAL_MINUTES") or "").strip()
+    if not raw:
+        return DEFAULT_LOGIN_CHECK_MINUTES
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("LOGIN_CHECK_INTERVAL_MINUTES=%r 不是有效整数，使用默认 %s 分钟", raw, DEFAULT_LOGIN_CHECK_MINUTES)
+        return DEFAULT_LOGIN_CHECK_MINUTES
 
 _scheduler: BackgroundScheduler | None = None
 _scheduler_ready = False
@@ -195,7 +213,7 @@ def _apply_schedule(account_id: str | None = None) -> None:
         if _login_check_func:
             _scheduler.add_job(
                 _login_check_job,
-                IntervalTrigger(minutes=15, timezone=TZ),
+                IntervalTrigger(minutes=_login_check_interval_minutes(), timezone=TZ),
                 args=[aid],
                 id=_job_id(aid, "login_check"),
                 replace_existing=True,

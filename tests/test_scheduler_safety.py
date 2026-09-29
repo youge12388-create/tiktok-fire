@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -240,3 +240,37 @@ def test_apply_schedule_failure_clears_scheduler_readiness(monkeypatch):
         scheduler.apply_schedule("acc_1")
 
     assert scheduler.is_running() is False
+
+
+def test_login_check_interval_defaults_to_60(monkeypatch):
+    monkeypatch.delenv("LOGIN_CHECK_INTERVAL_MINUTES", raising=False)
+
+    assert scheduler._login_check_interval_minutes() == 60
+
+
+def test_login_check_interval_reads_env(monkeypatch):
+    monkeypatch.setenv("LOGIN_CHECK_INTERVAL_MINUTES", "90")
+
+    assert scheduler._login_check_interval_minutes() == 90
+
+
+def test_login_check_interval_invalid_or_zero_falls_back(monkeypatch):
+    monkeypatch.setenv("LOGIN_CHECK_INTERVAL_MINUTES", "abc")
+    assert scheduler._login_check_interval_minutes() == 60
+
+    monkeypatch.setenv("LOGIN_CHECK_INTERVAL_MINUTES", "0")
+    assert scheduler._login_check_interval_minutes() == 1
+
+
+def test_login_check_job_uses_configured_interval(monkeypatch):
+    fake = FakeScheduler()
+    monkeypatch.setattr(scheduler, "_scheduler", fake)
+    monkeypatch.setattr(scheduler, "list_accounts", lambda: [{"id": "acc_1", "enabled": True}])
+    monkeypatch.setattr(scheduler, "load_config", lambda _aid: {"auto_run_enabled": False})
+    monkeypatch.setattr(scheduler, "_login_check_func", lambda **_kwargs: None)
+    monkeypatch.setenv("LOGIN_CHECK_INTERVAL_MINUTES", "45")
+
+    scheduler.apply_schedule("acc_1")
+
+    login_jobs = [j for j in fake.added if j["id"] == scheduler._job_id("acc_1", "login_check")]
+    assert login_jobs and login_jobs[0]["trigger"].interval == timedelta(minutes=45)

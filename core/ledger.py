@@ -56,6 +56,7 @@ def _default_entry(display_name: str) -> dict:
         "selected": False,
         "selected_order": None,  # 勾选顺序（越小越靠前，仅勾选时有效；持久化保证重启后置顶顺序不丢）
         "last_sent_at": None,
+        "last_send_ok": None,  # 最近一次真实发送是否成功；None = 从未真实发送
         "channel": "none",        # consumer | creator | none
         "join_confidence": "low",  # high: display_name 与 nickname 已对上；low: 未确认
         "identity_ambiguous": False,  # 同名联系人无法唯一定位时，禁止自动发送
@@ -121,7 +122,7 @@ def _save(entries: list[dict], account_id: str | None = None) -> None:
 
 
 def _upsert(entries: list[dict], entry: dict) -> dict:
-    """按 contact_key upsert：更新新字段，但保留已有条目的 selected / last_sent_at。
+    """按 contact_key upsert：更新新字段，但保留已有条目的 selected / last_sent_at / last_send_ok。
 
     新增条目补齐默认字段，保证 schema 一致。返回命中/新增的条目。
     """
@@ -130,12 +131,14 @@ def _upsert(entries: list[dict], entry: dict) -> dict:
         if e.get("contact_key", f"name:{e.get('display_name', '')}") == contact_key:
             selected = e.get("selected", False)
             last_sent = e.get("last_sent_at")
+            last_send_ok = e.get("last_send_ok")
             identity_ambiguous = bool(e.get("identity_ambiguous"))
             e.update(entry)
             for k, v in _default_entry(entry["display_name"]).items():
                 e.setdefault(k, v)
             e["selected"] = selected
             e["last_sent_at"] = last_sent
+            e["last_send_ok"] = last_send_ok
             e["identity_ambiguous"] = identity_ambiguous or bool(entry.get("identity_ambiguous"))
             return e
     base = _default_entry(entry["display_name"])
@@ -538,6 +541,7 @@ def update_send_result(
     for e in entries:
         if e.get("display_name") == display_name:
             e["last_sent_at"] = at or _now()
+            e["last_send_ok"] = bool(ok)
             if ok and not via_creator:
                 e["has_conversation"] = True
             break
